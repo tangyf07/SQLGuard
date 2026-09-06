@@ -69,6 +69,10 @@ sql-write-gate audit             # TIME / SOURCE / OP / TABLE / VERDICT
 | Unsupported / ambiguous SQL | REJECT/BLOCK — never silent ALLOW |
 | Freshness range / SET expired `dt` | BLOCK (`expired_partition`) |
 | PII SELECT after `approve <id>` | ALLOW execute (other guards remain) |
+| Freshness `NOT (dt >= cutoff)` / UPSERT SET expired | BLOCK (`expired_partition`) |
+| Fresh range `dt >= cutoff AND dt < upper` | not `expired_partition` (other guards apply) |
+| Nested DML under INSERT/UPDATE/DELETE root | REJECT (`unsupported_sql`) |
+| Interleaved double-approve | single write (atomic `executing` claim) |
 
 
 ## What it blocks
@@ -325,6 +329,22 @@ Tagged **v0.11.0** with [CHANGELOG.md](CHANGELOG.md) and a GitHub Release. No Py
 README badges (CI / Release / Python / License). Tagged **v0.13.0** with a GitHub Release. No PyPI. No product behavior change.
 
 
+## v0.19 — Approve race · redacted reconnect · freshness AND/OR/NOT · nested DML
+
+Version **0.19.0**. Closes remaining approve/reconnect/freshness/parser gaps after 0.18:
+
+| Item | Behavior |
+|------|----------|
+| Approve race | atomic `pending`→`executing` claim; only claimer writes |
+| Redacted reconnect | config id + trusted `DATABASE_URL` binding; never `***` as password |
+| CLI approve `--json` | `rows` materialized before connection close |
+| Audit failures | ALLOW/approve execute exceptions still audited (`failed` + `error_class`) |
+| DSN query password | `?password=` / `&passwd=` redacted in audit |
+| Freshness | `NOT (dt >= cutoff)` BLOCK; fresh AND-range ALLOW; UPSERT SET expired BLOCK |
+| Nested DML | `WITH … DELETE … INSERT …` → `unsupported_sql` |
+
+P0 from 0.17 and 0.18 suites must stay green. **非生产唯一边界**. **No clone/push/tag in this drop.**
+
 ## v0.18 — Freshness ranges · PII approve · nested hooks · MySQL autocommit
 
 Version **0.18.0**. Hardens bypasses left after 0.17:
@@ -508,15 +528,21 @@ sql-write-gate audit --limit 50
 sql-write-gate audit --audit-path /tmp/audit.jsonl
 ```
 
-## Backlog (post-0.18)
+## Backlog (post-0.19)
 
-These five are addressed in **0.18.0**. The gate is still **非生产唯一边界** — not the sole production security boundary.
+Addressed in **0.19.0** (and prior 0.18). The gate is still **非生产唯一边界** — not the sole production security boundary.
 
 - [x] Freshness range comparisons + SET/INSERT expired (0.18)
 - [x] `approve` clears PII SELECT for queued statement (0.18)
 - [x] Hook nested `bash/sh -c` + semicolon glue (0.18)
 - [x] MySQL callable `autocommit(True)` (0.18)
 - [x] Approvals flock / idempotent approve / audit URL redact + execution fields (0.18)
+- [x] Atomic approve claim `pending`→`executing` (0.19)
+- [x] Redacted reconnect via config id + trusted env binding (0.19)
+- [x] CLI `approve --json` materializes `rows` (0.19)
+- [x] Audit execute failures + `?password=` DSN redact (0.19)
+- [x] Freshness AND/OR/NOT + UPSERT SET partition (0.19)
+- [x] Nested DML under write roots rejected (0.19)
 - [ ] Distributed / multi-host approval lock (current flock is single-host best-effort)
 - [ ] MySQL wire-protocol proxy / Web UI / PyPI Trusted Publisher cutover (ops)
 
