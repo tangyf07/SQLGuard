@@ -216,9 +216,13 @@ def test_execute_delete_with_fake_sqlite_backend(tmp_path):
 
 def test_live_sqlite_insert_allow(tmp_path):
     """Optional live path: tempfile SQLite can CREATE + ALLOW insert."""
-    abs_path = str((tmp_path / "live.db").resolve())
-    url = f"sqlite:///{abs_path}"  # absolute path -> sqlite:////...
-    assert url.startswith("sqlite:////"), url
+    from write_gate.adapters.sqlite import _parse_sqlite_path
+
+    abs_path = (tmp_path / "live.db").resolve()
+    url = f"sqlite:///{abs_path.as_posix()}"
+    assert _parse_sqlite_path(url) == abs_path.as_posix() or (
+        _parse_sqlite_path(url) == str(abs_path)
+    )
 
     from write_gate.adapters import sqlite as sqlite_mod
 
