@@ -2,7 +2,24 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [0.19.0] — 2026-09-06
+
+### Security / hardening
+
+- **Approval race (R1)**: atomic `pending`→`executing` claim under `fcntl.flock`; only the claimer executes; second approve sees not-pending / idempotent and does not write; `failed` reclaim + approve/reject interleave safe
+- **Redacted reconnect (R2)**: approvals store config id + redacted display; reconnect resolves trusted creds for the same DB target (env/config binding); never treat `***` as a password
+- **CLI approve rows (R3)**: materialize / serialize result rows before closing the connection so `approve <id> --json` includes `rows`
+- **Audit failures + DSN query password (R4)**: on execute exception after ALLOW/approve, still append audit with `failed`, `error_class`, and `approval_id`; redact `?password=` (and similar) in DSNs
+- **Freshness logic (R5)**: AND/OR/NOT range reasoning — `WHERE NOT (dt >= cutoff)` BLOCK; fresh `dt >= cutoff AND dt < upper` ALLOW; UPSERT `DO UPDATE SET dt=expired` BLOCK (no early return after INSERT dates only); uncertain → BLOCK
+- **Nested DML under write root (R6)**: `WITH d AS (DELETE …) INSERT …` BLOCK/REJECT (`unsupported_sql`); `_nested_dml_nodes` finds nested DML under INSERT/UPDATE/DELETE roots
+
+### Docs / tests
+
+- README: version 0.19.0; backlog checklist updated; keep **非生产唯一边界**
+- Tests: `tests/test_v019.py` (R1–R6); v0.17 / v0.18 suites must stay green
+
 ## [0.18.0] — 2026-09-05
+
 
 ### Security / hardening
 
