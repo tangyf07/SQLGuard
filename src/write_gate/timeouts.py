@@ -1,4 +1,4 @@
-"""Statement timeout for check / execute / approve paths (v0.23).
+"""Statement timeout for check / execute / approve paths (v0.23 / v1.0.1).
 
 When ``statement_timeout_sec`` > 0, user SQL (and optional session SET) must
 finish within that wall clock. On expiry we raise ``StatementTimeoutError``.
@@ -9,11 +9,15 @@ Approve-path mapping (0.21 three-state):
 
 ``StatementTimeoutError`` defaults to indeterminate (``unknown``) because a
 worker thread may still be mid-flight when we abandon waiting.
+
+v1.0.1: the *caller* returns promptly at the deadline. We do **not** block on
+pool/thread shutdown waiting for the slow worker (the 1.0.0 ``with
+ThreadPoolExecutor`` hang).
 """
 
 from __future__ import annotations
 
-import concurrent.futures
+import threading
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
@@ -67,21 +71,50 @@ def run_with_timeout(
     timeout_sec: float,
     label: str = "statement",
 ) -> T:
-    """Run ``fn`` with a wall-clock timeout.
+    """Run ``fn`` with a wall-clock timeout; return promptly when the deadline hits.
 
-    Uses a worker thread so DuckDB/SQLite/drivers without native cancel still
-    surface a timeout to the gate. Abandoning the wait is indeterminate.
+    Uses a **daemon** worker thread so DuckDB/SQLite/drivers without native
+    cancel still surface a timeout to the gate. ``Thread.join(timeout=…)``
+    returns at the deadline; we never block waiting for the slow worker to
+    finish (unlike ``with ThreadPoolExecutor``, whose ``__exit__`` waited).
+
+    Cancel / connection semantics (document for operators):
+    - This wrapper does **not** forcibly abort an in-flight DB call. The
+      daemon worker may keep running until the driver returns; it may still
+      hold a connection or finish applying SQL after we raise.
+    - Native session timeouts (Postgres ``statement_timeout``, MySQL
+      ``max_execution_time`` via ``apply_session_timeout``) remain best-effort
+      cooperation from the server side.
+    - Because the outcome may still apply after we abandon the wait,
+      ``StatementTimeoutError.indeterminate`` defaults to True → execute /
+      approve map to ``unknown`` per 0.21. **No blind retry.**
     """
     if timeout_sec is None or timeout_sec <= 0:
         return fn()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(fn)
+
+    box: list[T] = []
+    err: list[BaseException] = []
+
+    def _runner() -> None:
         try:
-            return fut.result(timeout=timeout_sec)
-        except concurrent.futures.TimeoutError as exc:
-            raise StatementTimeoutError(
-                f"{label} exceeded statement timeout "
-                f"({timeout_sec:g}s); outcome may be indeterminate",
-                timeout_sec=timeout_sec,
-                indeterminate=True,
-            ) from exc
+            box.append(fn())
+        except BaseException as exc:  # noqa: BLE001 — re-raise on caller thread
+            err.append(exc)
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"sql-write-gate-{label}",
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=timeout_sec)
+    if thread.is_alive():
+        raise StatementTimeoutError(
+            f"{label} exceeded statement timeout "
+            f"({timeout_sec:g}s); outcome may be indeterminate",
+            timeout_sec=timeout_sec,
+            indeterminate=True,
+        )
+    if err:
+        raise err[0]
+    return box[0]
