@@ -9,12 +9,72 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gate
+          POSTGRES_PASSWORD: gate
+          POSTGRES_DB: writegate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gate -d writegate"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: gate
+          MYSQL_DATABASE: writegate
+          MYSQL_USER: gate
+          MYSQL_PASSWORD: gate
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pgate --silent"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+
+    env:
+      POSTGRES_URL: postgresql://gate:gate@localhost:5432/writegate
+      MYSQL_URL: mysql://gate:gate@127.0.0.1:3306/writegate
+
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Install
-        run: pip install -e ".[dev]"
-      - name: Test
+          python-version: "3.12"
+
+      - name: Install (editable + extras)
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev,postgres,mysql]"
+          pip install build
+
+      - name: Unit + integration tests
         run: make test
+
+      - name: Build wheel
+        run: python -m build
+
+      - name: Install wheel into clean venv and smoke
+        run: |
+          python -m venv /tmp/wheel-venv
+          /tmp/wheel-venv/bin/pip install -U pip
+          /tmp/wheel-venv/bin/pip install dist/*.whl
+          /tmp/wheel-venv/bin/pip install "pytest>=8" pyyaml "duckdb>=1.1" "sqlglot>=25" "psycopg[binary]>=3.1" pymysql
+          /tmp/wheel-venv/bin/python -c "import write_gate; print('installed', write_gate.__version__)"
+          /tmp/wheel-venv/bin/sql-write-gate check "DELETE FROM orders" || test $? -eq 2
+          # Key tests against installed wheel (do not put checkout src/ on path)
+          /tmp/wheel-venv/bin/pytest -q \
+            --override-ini="pythonpath=" \
+            tests/test_destructive.py \
+            tests/test_regression_r1_r6.py \
+            tests/test_v019.py \
+            tests/test_windows_support.py \
+            -p no:cacheprovider
