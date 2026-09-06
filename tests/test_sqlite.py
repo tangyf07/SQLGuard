@@ -79,6 +79,8 @@ def test_resolve_target_sqlite_url():
 
 
 def test_resolve_env_sqlite(monkeypatch):
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("MYSQL_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", SQLITE_URL)
     backend, target = resolve_target(environ=os.environ)
     assert backend == BACKEND_SQLITE
