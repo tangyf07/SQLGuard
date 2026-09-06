@@ -115,8 +115,26 @@ def _count_order(db_path: Path, order_id: int) -> int:
         conn.close()
 
 
+def _ensure_demo_approval_trust() -> None:
+    """Trusted-executor token for approve/resolve in this offline demo."""
+    key = ROOT / ".logs" / "approval.key"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    secret = "sqlguard-demo-approval-secret"
+    if not key.is_file():
+        key.write_text(secret + "\n", encoding="utf-8")
+        try:
+            key.chmod(0o600)
+        except OSError:
+            pass
+    else:
+        secret = key.read_text(encoding="utf-8").strip() or secret
+    os.environ["SQL_WRITE_GATE_APPROVAL_KEY_FILE"] = str(key)
+    os.environ["SQL_WRITE_GATE_APPROVAL_TOKEN"] = secret
+
+
 def main() -> int:
     os.chdir(ROOT)
+    _ensure_demo_approval_trust()
     gate = _gate_cmd()
     print(f"walkthrough CLI: {gate[0]}")
 

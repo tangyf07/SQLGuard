@@ -2,6 +2,9 @@
 
 any BLOCK → BLOCK; else any APPROVAL → REQUIRE_APPROVAL; else ALLOW.
 Guard order prefers specific dangerous-SQL rules over environment policy.
+
+Guards are loaded from ``write_gate.registry.default_registry`` so third-party
+rules can register without forking this module.
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from write_gate.adapters.base import BACKEND_DUCKDB, sqlglot_dialect
 from write_gate.catalog import Catalog
 from write_gate.config import Policy, production_policy
 from write_gate.decision import (
@@ -22,29 +26,11 @@ from write_gate.decision import (
     Decision,
     GuardResult,
 )
-from write_gate.guards import (
-    check_blast_radius,
-    check_destructive,
-    check_environment,
-    check_freshness,
-    check_pii,
-    check_schema,
-)
-from write_gate.adapters.base import BACKEND_DUCKDB, sqlglot_dialect
 from write_gate.parser import ParsedSQL, parse
+from write_gate.registry import default_registry
+from write_gate.risk import score_from_results
 
 GuardFn = Callable[["Context"], GuardResult]
-
-# Destructive first so DELETE without WHERE reports delete_without_where
-# even when environment also blocks DELETE.
-GUARDS: list[GuardFn] = [
-    check_destructive,
-    check_schema,
-    check_pii,
-    check_freshness,
-    check_blast_radius,
-    check_environment,
-]
 
 
 @dataclass
@@ -67,6 +53,7 @@ def evaluate(
     dialect: str = BACKEND_DUCKDB,
     *,
     human_approved: bool = False,
+    registry=None,
 ) -> Decision:
     parsed = parse(sql, dialect=sqlglot_dialect(dialect))
     ctx = Context(
@@ -78,9 +65,21 @@ def evaluate(
         dialect=dialect,
         human_approved=human_approved,
     )
-    results = [guard(ctx) for guard in GUARDS]
+    reg = registry if registry is not None else default_registry()
+    results = reg.run(ctx)
     ctx.guard_results = results
     return reduce(ctx, results)
+
+
+def _guards_list() -> list[GuardFn]:
+    return default_registry().functions()
+
+
+def __getattr__(name: str):
+    """Lazy GUARDS list so callers see the live registry."""
+    if name == 'GUARDS':
+        return _guards_list()
+    raise AttributeError(name)
 
 
 def reduce(ctx: Context, results: list[GuardResult]) -> Decision:
@@ -96,8 +95,9 @@ def reduce(ctx: Context, results: list[GuardResult]) -> Decision:
 
     if blocks:
         chosen = blocks[0]
-        return Decision(
-            action=ACTION_BLOCK,
+        action = ACTION_BLOCK
+        decision = Decision(
+            action=action,
             risk=chosen.risk,
             rule_id=chosen.rule_id or RULE_OK,
             reason=chosen.reason,
@@ -107,10 +107,11 @@ def reduce(ctx: Context, results: list[GuardResult]) -> Decision:
             table=parsed.table,
             estimated_rows=estimated if estimated is not None else chosen.evidence.get("estimated_rows"),
         )
-    if approvals:
+    elif approvals:
         chosen = approvals[0]
-        return Decision(
-            action=ACTION_APPROVAL,
+        action = ACTION_APPROVAL
+        decision = Decision(
+            action=action,
             risk=chosen.risk,
             rule_id=chosen.rule_id or RULE_OK,
             reason=chosen.reason,
@@ -120,17 +121,32 @@ def reduce(ctx: Context, results: list[GuardResult]) -> Decision:
             table=parsed.table,
             estimated_rows=estimated if estimated is not None else chosen.evidence.get("estimated_rows"),
         )
-    return Decision(
-        action=ACTION_ALLOW,
-        risk=RISK_LOW,
-        rule_id=RULE_OK,
-        reason=_allow_reason(parsed),
-        evidence=evidence_acc,
-        sql=ctx.sql,
+    else:
+        action = ACTION_ALLOW
+        decision = Decision(
+            action=action,
+            risk=RISK_LOW,
+            rule_id=RULE_OK,
+            reason=_allow_reason(parsed),
+            evidence=evidence_acc,
+            sql=ctx.sql,
+            operation=parsed.operation,
+            table=parsed.table,
+            estimated_rows=estimated,
+        )
+
+    explain_ev = evidence_acc.get("explain_cost") or {}
+    score, factors = score_from_results(
+        action=decision.action,
         operation=parsed.operation,
-        table=parsed.table,
-        estimated_rows=estimated,
+        results=results,
+        dangerous_flags=getattr(parsed, "dangerous_flags", None),
+        explain_cost=explain_ev.get("cost"),
+        explain_cost_threshold=getattr(ctx.policy, "explain_cost_threshold", None),
     )
+    decision.risk_score = score
+    decision.risk_factors = factors
+    return decision
 
 
 def _first_estimated(results: list[GuardResult]) -> int | None:

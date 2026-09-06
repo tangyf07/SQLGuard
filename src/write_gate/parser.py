@@ -10,7 +10,9 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
+from write_gate.ast_patterns import AstFindings, analyze_statement
 from write_gate.decision import RULE_SCHEMA, RULE_UNSUPPORTED
+from write_gate.idents import ident, literal_value
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -57,47 +59,10 @@ class ParsedSQL:
     insert_rows: list[list[exp.Expression]] | None = None
     error: str | None = None
     error_rule: str = RULE_SCHEMA
+    findings: AstFindings = field(default_factory=AstFindings)
+    tables_referenced: list[str] = field(default_factory=list)
+    dangerous_flags: list[str] = field(default_factory=list)
 
-
-def ident(node: exp.Expression | None) -> str | None:
-    if node is None:
-        return None
-    if isinstance(node, exp.Table):
-        return node.name.lower() if node.name else None
-    if isinstance(node, exp.Schema):
-        return ident(node.this)
-    if isinstance(node, exp.Identifier):
-        return node.name.lower()
-    if isinstance(node, exp.Column):
-        return node.name.lower() if node.name else None
-    name = getattr(node, "name", None)
-    return str(name).lower() if name else None
-
-
-def literal_value(node: exp.Expression | None) -> Any:
-    if node is None:
-        return None
-    if isinstance(node, exp.Null):
-        return None
-    if isinstance(node, exp.Cast):
-        return literal_value(node.this)
-    if isinstance(node, (exp.TsOrDsToDate, exp.Date)):
-        return literal_value(node.this) if node.this else node.sql()
-    if isinstance(node, exp.Literal):
-        raw = node.this
-        if node.is_int:
-            try:
-                return int(raw)
-            except (TypeError, ValueError):
-                return raw
-        if node.is_number:
-            try:
-                return float(raw)
-            except (TypeError, ValueError):
-                return raw
-        return str(raw)
-    sql = node.sql(dialect="duckdb").strip().strip("'\"")
-    return sql
 
 
 def expected_kind(col_type: str) -> str:
@@ -915,4 +880,18 @@ def parse(sql: str, dialect: str = "duckdb") -> ParsedSQL:
         parsed.select_columns = cols
         parsed.columns = cols
         parsed.star = star
+
+    # Stronger AST analysis (joins, tautology WHERE, referenced objects).
+    findings = analyze_statement(
+        stmt,
+        operation=parsed.operation,
+        has_where=parsed.has_where,
+        where=parsed.where,
+    )
+    parsed.findings = findings
+    parsed.tables_referenced = list(findings.tables)
+    parsed.dangerous_flags = list(findings.dangerous_flags)
+    # Treat tautology WHERE as missing for downstream destructive guards.
+    if findings.tautology_where and parsed.operation in {"update", "delete"}:
+        parsed.has_where = False
     return parsed

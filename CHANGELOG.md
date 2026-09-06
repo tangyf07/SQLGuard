@@ -2,6 +2,30 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [1.1.0] — 2026-09-06
+
+### SQLGuard depth (evolve-in-place)
+
+- **AST patterns** (`ast_patterns` + `ast_guard`): cartesian / missing-predicate JOINs BLOCK; tautology WHERE (`1=1` / `TRUE`) clears `has_where` so destructive still owns full-table UPDATE/DELETE; DDL dangerous flags on findings.
+- **Pluggable rule registry** (`registry.GuardRegistry`): register/unregister guards without forking `engine.py`; built-ins load via `default_registry()`.
+- **Permissions** in `policy.yaml` (`permissions.tables` / `allow_tables` + `enforced`): table×operation allowlists (GameStream-style). Offline-safe when unset.
+- **Numeric risk** on `Decision`: `risk_score` 0–100 + `risk_factors` (from guard results + AST flags + optional EXPLAIN).
+- **Optional EXPLAIN cost** (`explain.py` + `explain_cost` guard): adapters when `conn` present; skips cleanly offline / when threshold unset.
+- **Schema hallucination**: unknown table/column → `schema_hallucination` (catalog allowlist); SELECT path checks referenced tables/columns; `allow_unknown_tables/columns` knobs.
+- **Audit**: `actor`, `model_id`, `prompt_summary`, `sql`, `risk`/`risk_score`, `latency_ms`, `success`, `decision`.
+- **DataPilot BLOCK/EXECUTE**: stable `datapilot` verb on MCP (`datapilot_block_or_execute`), CLI `datapilot` / `serve` (HTTP `POST /v1/check|/v1/execute`), Python `write_gate.datapilot` / `write_gate.api`.
+- Preserve freshness + PII behavior from 1.0.x.
+
+### Docs / tests
+
+- README: testable/demoable first (AST / registry / permissions / risk / DataPilot).
+- Tests: `tests/test_v110.py`; v1.0.1 suite accepts `>= 1.0.1`.
+
+### Notes
+
+- Keep **非生产唯一边界 / 非唯一边界**.
+- Package version **1.1.0**.
+
 ## [1.0.1] — 2026-09-06
 
 ### Fixes (pilot-ready / 非唯一边界 unchanged)

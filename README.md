@@ -1,21 +1,21 @@
-# sql-write-gate
+# sql-write-gate (SQLGuard)
 
 [![CI](https://github.com/tangyf07/sql-write-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/tangyf07/sql-write-gate/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/tangyf07/sql-write-gate)](https://github.com/tangyf07/sql-write-gate/releases/latest)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-写库前门禁 · Policy firewall for AI agents writing to databases.
+写库前门禁 · **SQLGuard** — policy firewall for AI agents writing to databases.
 
 Prevent Claude Code, Codex, Cursor and MCP agents from executing unsafe database operations.
 
 ```
-  Agent SQL  ──►  sql-write-gate  ──►  ALLOW / BLOCK / APPROVAL  ──►  Database
+  DataPilot / Agent SQL  ──►  SQLGuard (sql-write-gate)  ──►  ALLOW / BLOCK / APPROVAL  ──►  Database
 ```
 
 Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No API key.**
 
-> **v1.0.1 — pilot-ready on the declared support matrix** (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
+> **v1.1.0 — SQLGuard** — stronger AST analysis, permissions, risk scores, schema hallucination block, DataPilot HTTP API; pilot-ready on the declared support matrix (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
 > **非生产唯一边界 / 非唯一边界** — **not** the sole production DB security boundary. Combine with least-privilege DB roles, network isolation, and human workflows.
 > **未列语法拒绝** — unsupported / ambiguous SQL → REJECT/BLOCK (`unsupported_sql`, fail closed), never silent ALLOW as read-only.
 
@@ -41,6 +41,18 @@ sql-write-gate check "DELETE FROM users"
 # → BLOCKED  rule=delete_without_where
 ```
 
+## Try it
+
+```bash
+make install && make test && make demo
+sql-write-gate check "DELETE FROM orders"
+# → BLOCKED  delete_without_where
+sql-write-gate datapilot --json "SELECT o.order_id FROM orders o CROSS JOIN orders p"
+# → {"datapilot": "BLOCK", "rule_id": "cartesian_join", ...}
+sql-write-gate serve --port 8787
+# POST /v1/check  {"sql": "..."}  → action + risk_score + datapilot
+```
+
 ## Entrypoints (stable)
 
 | Entrypoint | Role |
@@ -51,6 +63,7 @@ sql-write-gate check "DELETE FROM users"
 | CLI `proxy` | Gate then execute if ALLOW |
 | CLI `approve` / `resolve` / `reject` | Human approve / recover (trusted executor + token) |
 | CLI `audit` / `pending` / `init` / `exec` | Ops helpers |
+| CLI `serve` | SQLGuard DataPilot HTTP (`/v1/check`, `/v1/execute`) |
 
 ```bash
 sql-write-gate check "SQL"       # evaluate SQL; no execute
@@ -62,6 +75,39 @@ sql-write-gate resolve <id> --as succeeded|failed|rejected
 sql-write-gate audit             # TIME / SOURCE / OP / TABLE / VERDICT
 sql-write-gate init              # scaffold policy.yaml + catalog.json
 ```
+
+## DataPilot API contract (SQLGuard)
+
+DataPilot calls this gate **outbound**. Prefer MCP `query_sql` / `write_sql`, CLI `check` / `exec` / `proxy`, or HTTP:
+
+```bash
+sql-write-gate serve --host 127.0.0.1 --port 8787
+```
+
+| Method | Path | Behavior |
+|--------|------|----------|
+| `GET` | `/healthz` | `{ok, product: SQLGuard, version}` |
+| `POST` | `/v1/check` | Evaluate only → `action` + `risk_score` (`executed: false`) |
+| `POST` | `/v1/execute` | Gate then execute **only on ALLOW** |
+| `POST` | `/v1/block` | Alias of `/v1/check` |
+
+Request JSON: `{ "sql": "...", "actor"?, "model_id"?, "prompt_summary"?, "database"?, "policy"? }`.
+
+Response always includes `action` (`ALLOW` \| `BLOCK` \| `REQUIRE_APPROVAL`), `rule_id`, `reason`, `risk_score`, `risk_factors`, `executed`. Treat anything other than `ALLOW` as non-executing.
+
+### GameStream-style permissions
+
+```yaml
+permissions:
+  enforce: true
+  tables:
+    orders: [select, insert, update]
+hallucination:
+  allow_unknown_tables: false
+  allow_unknown_columns: false
+```
+
+Python alias: `from write_gate import sqlguard` (product helpers); package/CLI names unchanged.
 
 ## Declared databases (supported)
 
@@ -91,7 +137,11 @@ Anything **not** in this matrix (other warehouses, wire-protocol proxies, distri
 ## What it does (on the matrix)
 
 - `DROP` / `TRUNCATE` / `ALTER` → BLOCK
-- `DELETE` / `UPDATE` without `WHERE` → BLOCK
+- `DELETE` / `UPDATE` without `WHERE` (incl. tautology `WHERE 1=1` / `TRUE`) → BLOCK
+- Cartesian / missing-predicate JOINs → BLOCK (`cartesian_join`)
+- Unknown tables/columns → BLOCK (`schema_hallucination`) with evidence
+- GameStream-style `permissions.tables` allowlists in `policy.yaml`
+- Numeric `risk_score` (0–100) + `risk_factors` on every Decision
 - Blast-radius COUNT vs `update_rows` / `delete_rows` (dialect quoting; fail-closed on estimate error)
 - Schema / PII / restricted columns; PII `SELECT` → REQUIRE_APPROVAL (approve executes once)
 - Freshness partitions (`dt`); range / NOT / OR / UPSERT SET expired → BLOCK

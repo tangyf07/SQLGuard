@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print the three canonical gate cases: legal / expired / PII. No API key."""
+"""SQLGuard demo: classic three cases + AST / hallucination / risk / audit."""
 
 from __future__ import annotations
 
@@ -16,11 +16,28 @@ from write_gate.cases import EXPIRED_WRITE_SQL, LEGAL_WRITE_SQL, PII_WRITE_SQL  
 from write_gate.paths import DB_PATH, DEMO_POLICY_PATH  # noqa: E402
 from write_gate.wrapper import WriteGate  # noqa: E402
 
-
 CASES = [
     ("用例 1 · 合法写入（新鲜分区 + 非 PII 列）", LEGAL_WRITE_SQL, True, "ok"),
     ("用例 2 · 过期分区写入", EXPIRED_WRITE_SQL, False, "expired_partition"),
     ("用例 3 · PII 列写入", PII_WRITE_SQL, False, "pii_column"),
+    (
+        "用例 4 · AST · DELETE WHERE 1=1（全表写）",
+        "DELETE FROM orders WHERE 1=1",
+        False,
+        "delete_without_where",
+    ),
+    (
+        "用例 5 · AST · CROSS JOIN（笛卡尔积）",
+        "SELECT o.order_id FROM orders o CROSS JOIN orders p",
+        False,
+        "cartesian_join",
+    ),
+    (
+        "用例 6 · Schema hallucination · 未知表",
+        "SELECT * FROM game_stream_sessions",
+        False,
+        "schema_hallucination",
+    ),
 ]
 
 
@@ -33,7 +50,18 @@ def _banner(title: str) -> None:
 
 def main() -> int:
     rc = 0
-    with WriteGate(db_path=DB_PATH, policy_path=DEMO_POLICY_PATH) as gate:
+    audit_path = ROOT / ".logs" / "demo_audit.jsonl"
+    if audit_path.exists():
+        audit_path.unlink()
+    with WriteGate(
+        db_path=DB_PATH,
+        policy_path=DEMO_POLICY_PATH,
+        audit_path=audit_path,
+        agent="demo",
+        actor="sqlguard-demo",
+        model_id="demo-offline",
+        prompt_summary="make demo SQLGuard cases",
+    ) as gate:
         for title, sql, expect_allow, expect_rule in CASES:
             _banner(title)
             print(f"SQL:\n  {sql}")
@@ -41,6 +69,8 @@ def main() -> int:
             verdict = "ALLOWED" if evidence.allowed else "BLOCKED"
             print(f"VERDICT: {verdict}")
             print(f"rule_id: {evidence.rule_id}")
+            print(f"risk_score: {evidence.risk_score}")
+            print(f"risk_factors: {evidence.risk_factors}")
             print(f"message: {evidence.message}")
             print("evidence:")
             print(json.dumps(evidence.to_dict(), ensure_ascii=False, indent=2))
@@ -57,8 +87,28 @@ def main() -> int:
                 )
                 rc = 1
             print()
+
+        _banner("Audit · last lines (actor / risk_score / latency_ms)")
+        if audit_path.is_file():
+            lines = audit_path.read_text(encoding="utf-8").strip().splitlines()
+            for line in lines[-4:]:
+                rec = json.loads(line)
+                print(
+                    json.dumps(
+                        {
+                            "actor": rec.get("actor"),
+                            "decision": rec.get("decision"),
+                            "rule_id": rec.get("rule_id"),
+                            "risk_score": rec.get("risk_score"),
+                            "latency_ms": rec.get("latency_ms"),
+                            "success": rec.get("success"),
+                            "sql": (rec.get("sql") or "")[:60],
+                        },
+                        ensure_ascii=False,
+                    )
+                )
     if rc == 0:
-        print("demo: three cases matched expected verdicts")
+        print("demo: SQLGuard cases matched expected verdicts")
     return rc
 
 

@@ -10,3 +10,10 @@ rules:
 limits:
   update_rows: 100
   delete_rows: 50
+permissions:
+  enforce: true
+  tables:
+    orders: [select, insert, update]
+hallucination:
+  allow_unknown_tables: false
+  allow_unknown_columns: false

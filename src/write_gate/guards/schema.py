@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlglot import exp
 
 from write_gate.catalog import TableSpec
-from write_gate.decision import RULE_SCHEMA, GuardResult
+from write_gate.decision import RULE_HALLUCINATION, RULE_SCHEMA, GuardResult
 from write_gate.parser import literal_value, type_ok
 
 NAME = "schema"
@@ -27,7 +27,7 @@ def check_schema(ctx) -> GuardResult:
 
     operation = parsed.operation
     if operation == "select":
-        return GuardResult.pass_(NAME)
+        return _check_select_hallucination(parsed, ctx)
 
     if operation == "ddl":
         # Destructive/environment guards own DROP/ALTER/TRUNCATE/CREATE.
@@ -49,10 +49,10 @@ def check_schema(ctx) -> GuardResult:
     if spec is None:
         return GuardResult.block(
             NAME,
-            RULE_SCHEMA,
-            f"未知表 {table_name}，不在目录中",
+            RULE_HALLUCINATION,
+            f"Schema hallucination: unknown table {table_name} not in catalog",
             risk="medium",
-            evidence={"table": table_name},
+            evidence={"table": table_name, "known_tables": sorted(ctx.catalog.tables)},
         )
 
     if isinstance(stmt, exp.Insert):
@@ -130,8 +130,11 @@ def _columns_and_types(
     if unknown:
         return GuardResult.block(
             NAME,
-            RULE_SCHEMA,
-            f"未知列 {unknown}，表 {spec.name} 的列为 {sorted(spec.columns)}",
+            RULE_HALLUCINATION,
+            (
+                f"Schema hallucination: unknown column(s) {unknown} on table "
+                f"{spec.name}; known columns {sorted(spec.columns)}"
+            ),
             risk="medium",
             evidence={"unknown_columns": unknown, "table": spec.name},
         )
@@ -160,3 +163,90 @@ def _columns_and_types(
             evidence={"not_allowed": not_allowed},
         )
     return None
+
+
+def _cte_aliases(stmt) -> set[str]:
+    """Names introduced by WITH … AS (…); not catalog tables."""
+    names: set[str] = set()
+    if stmt is None:
+        return names
+    from write_gate.idents import ident
+
+    for cte in stmt.find_all(exp.CTE):
+        alias = getattr(cte, "alias_or_name", None)
+        if alias:
+            names.add(str(alias).lower())
+            continue
+        alias_node = cte.args.get("alias")
+        if alias_node is not None:
+            name = ident(alias_node) or ident(getattr(alias_node, "this", None))
+            if name:
+                names.add(name)
+    return names
+
+
+def _check_select_hallucination(parsed, ctx) -> GuardResult:
+    """Block SELECT on unknown tables/columns (schema hallucination).
+
+    CTE aliases are ignored. Honors ``allow_unknown_tables`` /
+    ``allow_unknown_columns`` policy knobs. ``SELECT *`` only validates tables.
+    """
+    policy = ctx.policy
+    allow_unknown_tables = bool(getattr(policy, "allow_unknown_tables", False))
+    allow_unknown_columns = bool(getattr(policy, "allow_unknown_columns", False))
+
+    catalog = ctx.catalog
+    tables = list(getattr(parsed, "tables_referenced", None) or [])
+    if parsed.table and parsed.table not in tables:
+        tables.insert(0, parsed.table)
+
+    cte_names = _cte_aliases(parsed.statement)
+    physical = [t for t in tables if t not in cte_names]
+
+    if not allow_unknown_tables:
+        unknown_tables = [t for t in physical if catalog.table(t) is None]
+        if unknown_tables:
+            return GuardResult.block(
+                NAME,
+                RULE_HALLUCINATION,
+                (
+                    f"Schema hallucination: unknown table(s) {unknown_tables} "
+                    f"not in catalog allowlist {sorted(catalog.tables)}"
+                ),
+                risk="medium",
+                evidence={
+                    "unknown_tables": unknown_tables,
+                    "known_tables": sorted(catalog.tables),
+                    "cte_aliases": sorted(cte_names),
+                },
+            )
+
+    if parsed.star or allow_unknown_columns:
+        return GuardResult.pass_(NAME)
+
+    findings = getattr(parsed, "findings", None)
+    cols = list(getattr(findings, "columns", None) or parsed.select_columns or [])
+    if not cols or not physical:
+        return GuardResult.pass_(NAME)
+
+    known: set[str] = set()
+    for tname in physical:
+        spec = catalog.table(tname)
+        if spec is not None:
+            known |= set(spec.columns.keys())
+    if not known:
+        return GuardResult.pass_(NAME)
+
+    unknown_cols = [c for c in cols if c not in known]
+    if unknown_cols:
+        return GuardResult.block(
+            NAME,
+            RULE_HALLUCINATION,
+            (
+                f"Schema hallucination: unknown column(s) {unknown_cols} "
+                f"for tables {physical}; known columns {sorted(known)}"
+            ),
+            risk="medium",
+            evidence={"unknown_columns": unknown_cols, "tables": physical},
+        )
+    return GuardResult.pass_(NAME)

@@ -56,6 +56,14 @@ class Policy:
     result_byte_limit: int | None = None
     audit_max_bytes: int | None = None
     audit_rotate_daily: bool | None = None
+    # SQLGuard 1.1 — GameStream-style table permissions + hallucination knobs
+    table_permissions: dict[str, list[str]] = field(default_factory=dict)
+    permissions_enforced: bool = False
+    allow_unknown_tables: bool = False
+    allow_unknown_columns: bool = False
+    default_table_ops: list[str] | None = None
+    explain_cost_threshold: float | None = None
+    enable_explain: bool = False
 
     def rule_for(self, operation: str) -> str:
         op = (operation or "ddl").lower()
@@ -84,6 +92,13 @@ class Policy:
             result_byte_limit=self.result_byte_limit,
             audit_max_bytes=self.audit_max_bytes,
             audit_rotate_daily=self.audit_rotate_daily,
+            table_permissions=dict(self.table_permissions),
+            permissions_enforced=self.permissions_enforced,
+            allow_unknown_tables=self.allow_unknown_tables,
+            allow_unknown_columns=self.allow_unknown_columns,
+            default_table_ops=(None if self.default_table_ops is None else list(self.default_table_ops)),
+            explain_cost_threshold=self.explain_cost_threshold,
+            enable_explain=self.enable_explain,
         )
 
 
@@ -106,6 +121,12 @@ def policy_from_dict(raw: dict[str, Any] | None = None) -> Policy:
     result_bytes = limits.get("result_bytes", limits.get("result_byte_limit"))
     audit_max = limits.get("audit_max_bytes", data.get("audit_max_bytes"))
     audit_daily = limits.get("audit_rotate_daily", data.get("audit_rotate_daily"))
+    table_perms, enforced = _parse_permissions(data)
+    hallu = data.get("hallucination") or data.get("schema") or {}
+    if not isinstance(hallu, dict):
+        hallu = {}
+    explain_thr = limits.get("explain_cost_threshold", data.get("explain_cost_threshold"))
+    enable_explain = data.get("enable_explain", limits.get("enable_explain", False))
     return Policy(
         environment=str(data.get("environment") or PRODUCTION_DEFAULTS["environment"]),
         rules=_normalize_rules(data.get("rules")),
@@ -116,7 +137,41 @@ def policy_from_dict(raw: dict[str, Any] | None = None) -> Policy:
         result_byte_limit=(None if result_bytes is None else int(result_bytes)),
         audit_max_bytes=(None if audit_max is None else int(audit_max)),
         audit_rotate_daily=(None if audit_daily is None else bool(audit_daily)),
+        table_permissions=table_perms,
+        permissions_enforced=enforced,
+        allow_unknown_tables=bool(hallu.get("allow_unknown_tables", data.get("allow_unknown_tables", False))),
+        allow_unknown_columns=bool(hallu.get("allow_unknown_columns", data.get("allow_unknown_columns", False))),
+        default_table_ops=([str(x).lower() for x in (data.get("permissions") or {}).get("default_ops")] if isinstance(data.get("permissions"), dict) and (data.get("permissions") or {}).get("default_ops") is not None else None),
+        explain_cost_threshold=(None if explain_thr is None else float(explain_thr)),
+        enable_explain=bool(enable_explain),
     )
+
+
+
+def _parse_permissions(data: dict[str, Any]) -> tuple[dict[str, list[str]], bool]:
+    """Parse permissions: tables map and/or allow_tables list."""
+    raw = data.get("permissions") or {}
+    if not isinstance(raw, dict):
+        return {}, False
+    table_perms: dict[str, list[str]] = {}
+    tables = raw.get("tables") or raw.get("table_permissions") or {}
+    if isinstance(tables, dict):
+        for k, v in tables.items():
+            key = str(k).lower()
+            if isinstance(v, (list, tuple, set)):
+                table_perms[key] = [str(x).lower() for x in v]
+            elif isinstance(v, str):
+                table_perms[key] = [v.lower()]
+            elif v is True:
+                table_perms[key] = ["select", "insert", "update", "delete"]
+    allow_tables = raw.get("allow_tables")
+    if isinstance(allow_tables, list):
+        default_ops = raw.get("default_ops") or ["select", "insert", "update", "delete"]
+        ops = [str(x).lower() for x in default_ops]
+        for name in allow_tables:
+            table_perms.setdefault(str(name).lower(), list(ops))
+    enforced = bool(raw.get("enforced", raw.get("enforce", bool(table_perms))))
+    return table_perms, enforced
 
 
 def load_policy(path: Path | str | None = None) -> Policy:

@@ -7,3 +7,9 @@ seed/warehouse.duckdb
 seed/warehouse.duckdb.wal
 seed/orders.csv
 .logs/*.jsonl
+.logs/*.sqlite
+.logs/*.lock
+.logs/approval.key
+.logs/demo_audit.jsonl
+build/
+dist/

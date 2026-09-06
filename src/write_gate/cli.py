@@ -44,11 +44,15 @@ def format_decision(decision: Decision) -> str:
     lines = [
         _headline(decision.action),
         f"Risk: {_safe(decision.risk)}",
+        f"Risk score: {getattr(decision, 'risk_score', 0)}",
         f"Operation: {_safe(decision.operation).upper()}",
         f"Table: {_safe(decision.table)}",
         f"Rule: {_safe(decision.rule_id)}",
         f"Reason: {_safe(decision.reason)}",
     ]
+    factors = getattr(decision, "risk_factors", None) or []
+    if factors:
+        lines.append(f"Risk factors: {', '.join(factors)}")
     if decision.estimated_rows is not None:
         lines.append(f"Estimated rows: {decision.estimated_rows}")
     if decision.approval_id:
@@ -79,13 +83,17 @@ def _require_trust_or_exit() -> int | None:
 
 
 def _gate_from_args(args: argparse.Namespace) -> WriteGate:
+    agent = getattr(args, "agent", None) or "cli"
     return WriteGate(
         db_path=Path(args.db) if getattr(args, "db", None) else None,
         database=getattr(args, "database", None),
         catalog_path=Path(args.catalog) if getattr(args, "catalog", None) else None,
         policy_path=Path(args.policy) if getattr(args, "policy", None) else None,
         approvals_path=_approvals_path(args),
-        agent=getattr(args, "agent", None) or "cli",
+        agent=agent,
+        actor=getattr(args, "actor", None) or agent,
+        model_id=getattr(args, "model_id", None),
+        prompt_summary=getattr(args, "prompt_summary", None),
     )
 
 
@@ -180,6 +188,14 @@ def _add_shared(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--agent", default="cli", help="Audit agent name")
+    parser.add_argument("--actor", default=None, help="Audit actor (DataPilot / human id)")
+    parser.add_argument("--model-id", dest="model_id", default=None, help="Model id for audit")
+    parser.add_argument(
+        "--prompt-summary",
+        dest="prompt_summary",
+        default=None,
+        help="Short prompt summary for audit (truncated)",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     parser.add_argument(
         "--approvals",
@@ -316,6 +332,26 @@ def build_parser() -> argparse.ArgumentParser:
         "pending",
         help="List pending approval ids",
         parents=[queue],
+    )
+
+    serve_p = sub.add_parser(
+        "serve",
+        help="SQLGuard DataPilot HTTP API (POST /v1/check|/v1/execute)",
+        parents=[shared],
+    )
+    serve_p.add_argument("--host", default="127.0.0.1", help="Bind host")
+    serve_p.add_argument("--port", type=int, default=8787, help="Bind port")
+
+    dp = sub.add_parser(
+        "datapilot",
+        help="DataPilot BLOCK/EXECUTE evaluate (optional --execute)",
+        parents=[shared],
+    )
+    dp.add_argument("sql", help="One SQL statement")
+    dp.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute on ALLOW (default: check-only)",
     )
 
     init_p = sub.add_parser(
@@ -574,6 +610,58 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init":
         return _cmd_init(args)
+
+    if args.command == "datapilot":
+        from write_gate.datapilot import block_or_execute
+
+        payload = block_or_execute(
+            args.sql,
+            execute=bool(args.execute),
+            database=getattr(args, "database", None),
+            db_path=getattr(args, "db", None),
+            catalog_path=getattr(args, "catalog", None),
+            policy_path=getattr(args, "policy", None),
+            agent=getattr(args, "agent", None) or "datapilot",
+            actor=getattr(args, "actor", None),
+            model_id=getattr(args, "model_id", None),
+            prompt_summary=getattr(args, "prompt_summary", None),
+        )
+        if args.json:
+            json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
+            sys.stdout.write("\n")
+        else:
+            lines = [
+                str(payload["datapilot"]),
+                f"Action: {payload['action']}",
+                f"Rule: {payload.get('rule_id')}",
+                f"Risk score: {payload.get('risk_score')}",
+                f"Reason: {payload.get('reason')}",
+                f"executed: {'yes' if payload.get('executed') else 'no'}",
+            ]
+            sys.stdout.write("\n".join(lines) + "\n")
+        if payload["datapilot"] == "EXECUTE" and (
+            not args.execute or payload.get("executed")
+        ):
+            return 0
+        if payload["datapilot"] == "APPROVAL":
+            return 1
+        return 2
+
+    if args.command == "serve":
+        from write_gate.api import run_serve_cli
+
+        defaults = {
+            "database": getattr(args, "database", None),
+            "db_path": getattr(args, "db", None),
+            "catalog": getattr(args, "catalog", None),
+            "policy": getattr(args, "policy", None),
+            "agent": getattr(args, "agent", None) or "datapilot",
+        }
+        return run_serve_cli(
+            host=args.host,
+            port=args.port,
+            defaults=defaults,
+        )
 
     with _gate_from_args(args) as gate:
         if args.command == "check":

@@ -10,3 +10,11 @@ rules:
 limits:
   update_rows: 10000
   delete_rows: 10000
+# SQLGuard: GameStream-style table allowlist (demo allows orders fully)
+permissions:
+  enforce: true
+  tables:
+    orders: [select, insert, update, delete]
+hallucination:
+  allow_unknown_tables: false
+  allow_unknown_columns: false

@@ -66,6 +66,9 @@ class WriteGate:
         agent: str = "cli",
         database: str | None = None,
         database_url: str | None = None,
+        actor: str | None = None,
+        model_id: str | None = None,
+        prompt_summary: str | None = None,
     ) -> None:
         backend, target = resolve_target(
             database=database,
@@ -84,6 +87,9 @@ class WriteGate:
             Path(approvals_path) if approvals_path else default_approvals_path()
         )
         self.agent = agent
+        self.actor = actor or agent
+        self.model_id = model_id
+        self.prompt_summary = prompt_summary
         self.database_config_id = None
         self._conn = conn
         self._owns_conn = conn is None
@@ -253,6 +259,8 @@ class WriteGate:
         executed: bool | None = None,
         execution_outcome: str | None = None,
         error_class: str | None = None,
+        latency_ms: float | None = None,
+        success: bool | None = None,
     ) -> None:
         append_audit(
             decision,
@@ -264,10 +272,18 @@ class WriteGate:
             execution_outcome=execution_outcome,
             error_class=error_class,
             request_id=self.request_id,
+            actor=self.actor,
+            model_id=self.model_id,
+            prompt_summary=self.prompt_summary,
+            latency_ms=latency_ms,
+            success=success,
         )
 
     def check(self, sql: str) -> Decision:
+        import time as _time
+
         # Apply statement timeout to evaluate (blast-radius COUNT, etc.).
+        t0 = _time.perf_counter()
         if self.runtime.timeout_enabled:
             try:
                 decision = run_with_timeout(
@@ -289,11 +305,17 @@ class WriteGate:
                     executed=False,
                     execution_outcome="failed",
                     error_class=type(exc).__name__,
+                    latency_ms=(_time.perf_counter() - t0) * 1000.0,
+                    success=False,
                 )
                 return decision
         else:
             decision = self._evaluate(sql, use_conn=False)
-        self._audit(decision)
+        self._audit(
+            decision,
+            latency_ms=(_time.perf_counter() - t0) * 1000.0,
+            success=decision.action == ACTION_ALLOW,
+        )
         return decision
 
     def execute(self, sql: str) -> tuple[Decision, Any]:
@@ -302,6 +324,9 @@ class WriteGate:
         REQUIRE_APPROVAL is enqueued and not executed. BLOCK is not queued
         and not executed. check() stays evaluate-only (no enqueue).
         """
+        import time as _time
+
+        t0 = _time.perf_counter()
         decision = self._evaluate(sql, use_conn=True)
         if decision.action == ACTION_APPROVAL:
             rec = enqueue_approval(
@@ -321,6 +346,8 @@ class WriteGate:
                 decision,
                 executed=False,
                 execution_outcome="queued",
+                latency_ms=(_time.perf_counter() - t0) * 1000.0,
+                success=False,
             )
             return decision, None
         if decision.action != ACTION_ALLOW:
@@ -328,6 +355,8 @@ class WriteGate:
                 decision,
                 executed=False,
                 execution_outcome="blocked",
+                latency_ms=(_time.perf_counter() - t0) * 1000.0,
+                success=False,
             )
             return decision, None
         try:
@@ -341,12 +370,16 @@ class WriteGate:
                 executed=False,
                 execution_outcome=exec_outcome,
                 error_class=type(exc).__name__,
+                latency_ms=(_time.perf_counter() - t0) * 1000.0,
+                success=False,
             )
             raise
         self._audit(
             decision,
             executed=True,
             execution_outcome="executed",
+            latency_ms=(_time.perf_counter() - t0) * 1000.0,
+            success=True,
         )
         return decision, result
 

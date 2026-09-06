@@ -100,7 +100,10 @@ def decision_payload(
         "operation": decision.operation,
         "table": decision.table,
         "risk": decision.risk,
+        "risk_score": getattr(decision, "risk_score", 0),
+        "risk_factors": list(getattr(decision, "risk_factors", None) or []),
         "executed": bool(executed),
+        "product": "SQLGuard",
     }
     if getattr(decision, "approval_id", None):
         payload["approval_id"] = decision.approval_id
@@ -206,4 +209,62 @@ def write_sql(
         policy_path=policy_path,
         approvals_path=approvals_path,
         agent=agent,
+    )
+
+
+def datapilot_check(
+    sql: str,
+    *,
+    database: str | None = None,
+    db_path: str | Path | None = None,
+    catalog_path: str | Path | None = None,
+    policy_path: str | Path | None = None,
+    agent: str = "mcp",
+    actor: str | None = None,
+    model_id: str | None = None,
+    prompt_summary: str | None = None,
+) -> dict[str, Any]:
+    """DataPilot BLOCK/EXECUTE check (never writes)."""
+    from write_gate.datapilot import block_or_execute
+
+    return block_or_execute(
+        sql,
+        execute=False,
+        database=database,
+        db_path=str(db_path) if db_path else None,
+        catalog_path=str(catalog_path) if catalog_path else None,
+        policy_path=str(policy_path) if policy_path else None,
+        agent=agent,
+        actor=actor,
+        model_id=model_id,
+        prompt_summary=prompt_summary,
+    )
+
+
+def datapilot_execute(
+    sql: str,
+    *,
+    database: str | None = None,
+    db_path: str | Path | None = None,
+    catalog_path: str | Path | None = None,
+    policy_path: str | Path | None = None,
+    agent: str = "mcp",
+    actor: str | None = None,
+    model_id: str | None = None,
+    prompt_summary: str | None = None,
+) -> dict[str, Any]:
+    """DataPilot EXECUTE path — runs SQL only when gate returns ALLOW."""
+    from write_gate.datapilot import block_or_execute
+
+    return block_or_execute(
+        sql,
+        execute=True,
+        database=database,
+        db_path=str(db_path) if db_path else None,
+        catalog_path=str(catalog_path) if catalog_path else None,
+        policy_path=str(policy_path) if policy_path else None,
+        agent=agent,
+        actor=actor,
+        model_id=model_id,
+        prompt_summary=prompt_summary,
     )
