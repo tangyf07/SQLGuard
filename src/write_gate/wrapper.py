@@ -44,6 +44,8 @@ from write_gate.paths import (
     default_db_path,
     default_policy_path,
 )
+from write_gate.runtime import load_runtime_settings, new_request_id
+from write_gate.timeouts import StatementTimeoutError, apply_session_timeout, run_with_timeout
 
 __all__ = ["WriteGate", "Evidence", "Decision"]
 
@@ -85,6 +87,8 @@ class WriteGate:
         self.database_config_id = None
         self._conn = conn
         self._owns_conn = conn is None
+        self.runtime = load_runtime_settings(self.policy)
+        self.request_id = new_request_id()
 
     @property
     def conn(self) -> Any:
@@ -97,18 +101,24 @@ class WriteGate:
         if self.backend == BACKEND_POSTGRES:
             from write_gate.adapters.postgres import connect as pg_connect
 
-            return pg_connect(target)
-        if self.backend == BACKEND_MYSQL:
+            conn = pg_connect(target)
+        elif self.backend == BACKEND_MYSQL:
             from write_gate.adapters.mysql import connect as mysql_connect
 
-            return mysql_connect(target)
-        if self.backend == BACKEND_SQLITE:
+            conn = mysql_connect(target)
+        elif self.backend == BACKEND_SQLITE:
             from write_gate.adapters.sqlite import connect as sqlite_connect
 
-            return sqlite_connect(target)
-        from write_gate.adapters.duckdb import connect as duck_connect
+            conn = sqlite_connect(target)
+        else:
+            from write_gate.adapters.duckdb import connect as duck_connect
 
-        return duck_connect(self.db_path)
+            conn = duck_connect(self.db_path)
+        if self.runtime.timeout_enabled:
+            apply_session_timeout(
+                conn, self.runtime.statement_timeout_sec, self.backend
+            )
+        return conn
 
     def _resolved_database(self) -> str:
         """Return a connectable database target; never use ``***`` as a password.
@@ -253,10 +263,36 @@ class WriteGate:
             executed=executed,
             execution_outcome=execution_outcome,
             error_class=error_class,
+            request_id=self.request_id,
         )
 
     def check(self, sql: str) -> Decision:
-        decision = self._evaluate(sql, use_conn=False)
+        # Apply statement timeout to evaluate (blast-radius COUNT, etc.).
+        if self.runtime.timeout_enabled:
+            try:
+                decision = run_with_timeout(
+                    lambda: self._evaluate(sql, use_conn=False),
+                    timeout_sec=self.runtime.statement_timeout_sec,
+                    label="check",
+                )
+            except StatementTimeoutError as exc:
+                # Check never applies writes — sure not applied → audit failed.
+                decision = Decision(
+                    action="BLOCK",
+                    risk="medium",
+                    rule_id="statement_timeout",
+                    reason=str(exc),
+                    sql=sql,
+                )
+                self._audit(
+                    decision,
+                    executed=False,
+                    execution_outcome="failed",
+                    error_class=type(exc).__name__,
+                )
+                return decision
+        else:
+            decision = self._evaluate(sql, use_conn=False)
         self._audit(decision)
         return decision
 
@@ -297,10 +333,13 @@ class WriteGate:
         try:
             result = self._execute_user_sql(sql)
         except Exception as exc:
+            # Direct execute (no approval row): still follow failed vs unknown.
+            outcome = classify_execute_error(exc)
+            exec_outcome = "unknown" if outcome == STATUS_UNKNOWN else "failed"
             self._audit(
                 decision,
                 executed=False,
-                execution_outcome="failed",
+                execution_outcome=exec_outcome,
                 error_class=type(exc).__name__,
             )
             raise
@@ -490,7 +529,17 @@ class WriteGate:
             from write_gate.adapters.sqlite import execute_user_sql as exec_sql
         else:
             from write_gate.adapters.duckdb import execute_user_sql as exec_sql
-        return exec_sql(self.conn, sql)
+
+        def _run():
+            return exec_sql(self.conn, sql)
+
+        if not self.runtime.timeout_enabled:
+            return _run()
+        return run_with_timeout(
+            _run,
+            timeout_sec=self.runtime.statement_timeout_sec,
+            label="user SQL",
+        )
 
     def close(self) -> None:
         if self._owns_conn and self._conn is not None:
