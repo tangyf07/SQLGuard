@@ -67,9 +67,9 @@ def _decision(**kwargs) -> Decision:
 
 
 def test_version_is_022():
-    assert __version__ == "0.23.0"
+    assert __version__ == "1.0.0"
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.23.0"' in text
+    assert 'version = "1.0.0"' in text
 
 
 # --- Trust token (no / wrong / right) ----------------------------------------
