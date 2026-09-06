@@ -5,12 +5,26 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-写库前门禁 · **SQLGuard** — policy firewall for AI agents writing to databases.
+一句话：**SQLGuard**（仓库名 `sql-write-gate`）= 面向 AI Agent 的 **SQL 安全执行网关**；简历项目名建议写 **SQLGuard**。
 
-Prevent Claude Code, Codex, Cursor and MCP agents from executing unsafe database operations.
+- [GameStream](https://github.com/tangyf07/GameStream)（指标 / ADS）  
+- [DataPilot](https://github.com/tangyf07/DataPilot)（问数 → Text2SQL → 出站门禁）  
+- 本仓：SQLGuard 执行前 BLOCK / EXECUTE
 
-```
-  DataPilot / Agent SQL  ──►  SQLGuard (sql-write-gate)  ──►  ALLOW / BLOCK / APPROVAL  ──►  Database
+```mermaid
+flowchart LR
+  NL[自然语言问数] --> DP[DataPilot]
+  DP --> SG[SQLGuard / sql-write-gate]
+  SG -->|只读 ADS SQL| GS[GameStream ADS]
+  subgraph GS_pipe [GameStream 实时链路]
+    E[游戏行为事件] --> K[Kafka]
+    K --> F[Flink 清洗/聚合]
+    F --> OLAP[Doris / Iceberg]
+    E -. lite .-> DB[(DuckDB)]
+    DB --> ADS[(ADS 指标表)]
+    OLAP --> ADS
+  end
+  GS --- ADS
 ```
 
 Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No API key.**
@@ -77,6 +91,8 @@ sql-write-gate init              # scaffold policy.yaml + catalog.json
 ```
 
 ## DataPilot API contract (SQLGuard)
+
+**契约稳定（v1.1+）**：DataPilot 出站只依赖 `BLOCK` / `EXECUTE`（HTTP `/v1/check`·`/v1/block` / `/v1/execute`，以及等价 MCP/CLI）。已合入的 1.1 路径勿破坏字段语义；扩展只加字段、不改既有含义。
 
 DataPilot calls this gate **outbound**. Prefer MCP `query_sql` / `write_sql`, CLI `check` / `exec` / `proxy`, or HTTP:
 
