@@ -29,6 +29,7 @@ from write_gate.approvals import (
 )
 from write_gate.audit import (
     append_audit,
+    database_config_id,
     resolve_trusted_database_url,
     url_has_redacted_password,
 )
@@ -110,21 +111,98 @@ class WriteGate:
         return duck_connect(self.db_path)
 
     def _resolved_database(self) -> str:
-        """Return a connectable database target; never use ``***`` as a password."""
+        """Return a connectable database target; never use ``***`` as a password.
+
+        When ``database_config_id`` is set (approval reconnect), the resolved
+        target fingerprint must match — never silently swap to a different
+        ``DATABASE_URL``.
+        """
         raw = self.database
+        expected = getattr(self, "database_config_id", None)
         if raw and url_has_redacted_password(raw):
             resolved = resolve_trusted_database_url(
                 raw,
                 preferred=None,
-                config_id=getattr(self, "database_config_id", None),
+                config_id=expected,
             )
             if not resolved or url_has_redacted_password(resolved):
                 raise ApprovalError(
                     "cannot reconnect with redacted database password (***); "
                     "bind trusted credentials via DATABASE_URL for the same DB target"
+                    + (f" (expected {expected})" if expected else "")
+                )
+            if expected and database_config_id(resolved) != expected:
+                raise ApprovalError(
+                    f"approval target mismatch: queued for {expected}, "
+                    f"resolved {database_config_id(resolved)} — refuse write "
+                    "(will not swap to a different DATABASE_URL)"
                 )
             return resolved
+        if expected:
+            got = database_config_id(raw)
+            if got != expected:
+                raise ApprovalError(
+                    f"approval target mismatch: queued for {expected}, "
+                    f"current target {got} — refuse write "
+                    "(will not swap to a different DATABASE_URL)"
+                )
         return raw
+
+    def _bind_approval_target(self, rec) -> None:
+        """Rebind this gate to the approval's queued DB fingerprint (fail closed).
+
+        Queue-against-A / env-now-B must never execute against B.
+        """
+        expected = getattr(rec, "database_config_id", None)
+        if not expected:
+            # Legacy URL approvals without fingerprint: refuse reconnect.
+            if rec.database and "://" in str(rec.database):
+                raise ApprovalError(
+                    "approval missing database_config_id; refuse reconnect "
+                    "(re-queue required under v0.19+ target binding)"
+                )
+            if rec.db_path:
+                expected = database_config_id(rec.db_path)
+            if not expected:
+                return
+
+        candidate: str | None = None
+        if rec.database:
+            if url_has_redacted_password(rec.database):
+                candidate = resolve_trusted_database_url(
+                    rec.database,
+                    config_id=expected,
+                )
+            elif database_config_id(rec.database) == expected:
+                candidate = str(rec.database)
+        if candidate is None and rec.db_path:
+            if database_config_id(rec.db_path) == expected:
+                candidate = str(rec.db_path)
+        if candidate is None:
+            current = self.database
+            if database_config_id(current) == expected:
+                candidate = str(current)
+            elif (
+                self.backend == BACKEND_DUCKDB
+                and database_config_id(str(self.db_path)) == expected
+            ):
+                candidate = str(self.db_path)
+
+        if candidate is None or database_config_id(candidate) != expected:
+            raise ApprovalError(
+                f"approval target mismatch: queued for {expected}, "
+                "current DATABASE_URL/credentials do not bind to that fingerprint "
+                "(fail closed; will not write to a different database)"
+            )
+
+        backend, target = resolve_target(database=candidate)
+        if self._conn is not None and self._owns_conn:
+            self.close()
+        self.backend = backend
+        self.database = target
+        self.database_config_id = expected
+        if backend == BACKEND_DUCKDB:
+            self.db_path = Path(target)
 
     def _conn_if_available(self) -> Any | None:
         if self._conn is not None:
@@ -287,6 +365,10 @@ class WriteGate:
                 "`--allow-unknown-retry` (never silently re-claimed)"
             )
 
+        # Fail-closed target check before claim so a mismatch never leaves
+        # the row stuck in ``executing``.
+        self._bind_approval_target(existing)
+
         # Atomic claim under flock + SQLite — closes the approve race window.
         try:
             rec = claim_for_execute(
@@ -319,12 +401,12 @@ class WriteGate:
                 return decision, None
             raise
 
-        if rec.database_config_id:
-            self.database_config_id = rec.database_config_id
-        if rec.database and (
-            not self.database or url_has_redacted_password(str(self.database))
-        ):
-            self.database = rec.database
+        # Reaffirm binding after claim (env must still match fingerprint).
+        try:
+            self._bind_approval_target(rec)
+        except ApprovalError:
+            release_claim(rec.id, path=self.approvals_path, to_status="pending")
+            raise
 
         saved_policy = self.policy
         try:
