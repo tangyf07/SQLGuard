@@ -32,3 +32,16 @@ def _isolate_ci_db_urls(request, monkeypatch):
         return
     monkeypatch.delenv("POSTGRES_URL", raising=False)
     monkeypatch.delenv("MYSQL_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _approval_trust_for_tests(tmp_path_factory, monkeypatch):
+    """Trusted-executor key + token so CLI approve/resolve/reject stay green.
+
+    v0.22 requires ``SQL_WRITE_GATE_APPROVAL_TOKEN`` to match the key file.
+    Suites that assert privilege separation clear/override these env vars.
+    """
+    key = tmp_path_factory.mktemp("approval-trust") / "approval.key"
+    key.write_text("test-approval-secret\n", encoding="utf-8")
+    monkeypatch.setenv("SQL_WRITE_GATE_APPROVAL_KEY_FILE", str(key))
+    monkeypatch.setenv("SQL_WRITE_GATE_APPROVAL_TOKEN", "test-approval-secret")
