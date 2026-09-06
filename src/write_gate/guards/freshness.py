@@ -41,10 +41,20 @@ def check_freshness(ctx) -> GuardResult:
     if not part:
         return GuardResult.pass_(NAME)
 
+    cutoff = ctx.catalog.cutoff_date
+    dates: list[date | None] = []
+
     if parsed.operation == "insert":
         rows = parsed.insert_rows or []
-        cols = list(getattr(parsed, "insert_columns", None) or []) or list(parsed.columns) or list(parsed.write_columns)
-        dates = partition_dates_from_insert(cols, rows, part)
+        cols = (
+            list(getattr(parsed, "insert_columns", None) or [])
+            or list(parsed.columns)
+            or list(parsed.write_columns)
+        )
+        dates.extend(partition_dates_from_insert(cols, rows, part))
+        # UPSERT: ON CONFLICT DO UPDATE SET may write partition cols — do not
+        # return early after INSERT VALUES dates alone.
+        dates.extend(partition_dates_from_assignments(parsed.assignments, part))
         return _evaluate_dates(
             spec,
             ctx.catalog,
@@ -53,11 +63,7 @@ def check_freshness(ctx) -> GuardResult:
             missing_message=f"INSERT 必须显式写出分区列 {part}",
         )
 
-    cutoff = ctx.catalog.cutoff_date
-    dates: list[date | None] = []
-
-    # Range-aware WHERE: block UPDATE/DELETE that touch expired partitions
-    # via < / <= / > / >= / BETWEEN (not only = / IN).
+    # Range-aware WHERE: AND/OR/NOT + < / <= / > / >= / BETWEEN / = / IN.
     touched = expired_partition_touch(parsed.where, part, cutoff)
     if touched is not None:
         dates.append(touched)
@@ -66,7 +72,7 @@ def check_freshness(ctx) -> GuardResult:
     if parsed.operation == "update":
         dates.extend(partition_dates_from_assignments(parsed.assignments, part))
 
-    # UPDATE/DELETE: if WHERE names an expired partition, block.
+    # UPDATE/DELETE: if WHERE can touch an expired partition, block.
     # If WHERE exists but does not mention the partition, let blast_radius handle scope.
     return _evaluate_dates(
         spec,
