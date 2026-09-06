@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-
-import pytest
-
 from write_gate.adapters.base import (
     BACKEND_DUCKDB,
     BACKEND_MYSQL,
