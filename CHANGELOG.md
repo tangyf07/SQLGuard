@@ -2,6 +2,21 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [1.0.0] — 2026-09-06
+
+### Pilot-ready on declared support matrix
+
+- **v1.0.0** cut: limited support-matrix **pilot-ready** (DuckDB / PostgreSQL / MySQL / SQLite + declared SQL features + CLI/hook/MCP/proxy/approve). Explicitly **NOT** the sole production DB security boundary.
+- Keep **非生产唯一边界 / 非唯一边界**. No distributed locks / protocol proxy / Web UI / new cloud warehouses.
+- README: remove vague “early prototype / candidate” wording; front-page support / unsupported tables; stable interfaces (CLI, Python API, Decision JSON fields); ops knobs consolidated.
+- Docs: `docs/compatibility.md` (SemVer), `docs/upgrade-0.23-to-1.0.md`, `docs/pilot-checklist.md`, `docs/v1-acceptance.md`.
+- Tests: `tests/test_v100.py` (version, exports, unsupported still blocks, docs contracts); older version pins accept `1.0.0`. Product behavior carries forward from 0.23 (approvals SQLite SoT, trust token, timeouts, result caps).
+
+### Notes
+
+- Parent pushes / tags / releases — no release actions in this cut.
+- Suites 0.17–0.23 remain green under `make test`.
+
 ## [0.23.0] — 2026-09-06
 
 ### Ops & controlled pilot
