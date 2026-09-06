@@ -2,6 +2,23 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [1.0.1] — 2026-09-06
+
+### Fixes (pilot-ready / 非唯一边界 unchanged)
+
+- **Timeout wall-clock return**: `run_with_timeout` returns promptly at the deadline. No longer blocks on `ThreadPoolExecutor` shutdown waiting for the slow worker (1.0.0 hang: timeout 0.05s → ~0.5s). Uses a daemon worker + timed join; document cancel/connection semantics — in-flight DB work is not forcibly aborted; indeterminate → `unknown` per 0.21; **no blind retry**.
+- **Hard result byte limit**: materialized rows stay within `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` (shrink oversized single-row cells in truncate mode) or raise `ResultOversizeError` in `RESULT_OVERSIZE=block`. A single oversized row is never returned intact.
+
+### Docs / tests
+
+- README + `docs/troubleshooting.md`: clarify timeout wall-clock / cancel semantics and hard byte-limit behavior.
+- Tests: `tests/test_v101.py`; older version pins accept `>= 1.0.0`. Keep **非生产唯一边界 / 非唯一边界**.
+
+### Notes
+
+- Do **not** push / tag / release from this cut.
+- Suites through 1.0.0 remain green under `make test`.
+
 ## [1.0.0] — 2026-09-06
 
 ### Pilot-ready on declared support matrix
