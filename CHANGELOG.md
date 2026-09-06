@@ -2,6 +2,23 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [0.21.0] — 2026-09-06
+
+### Single-host approval reliability
+
+- **Three-state outcomes** after approve/execute: `succeeded` (DB completed), `failed` (known not executed / rolled back), `unknown` (timeout/disconnect/crash/indeterminate after attempt may have reached DB)
+- **`unknown` ≠ `failed` auto-retry**: never automatically re-execute the same approval when status is `unknown` or stuck `executing`; default second `approve` on `succeeded`/`unknown` does not write (idempotent)
+- **Human recovery CLI**: `approve --force-unknown-check`, `resolve --as succeeded|failed|rejected` (alias `confirm-succeeded`), `approve --allow-unknown-retry` (explicit only; documents double-write risk), `reject`
+- **Durable SQLite state store** (source of truth) with transactional `pending`→`executing` claim (`BEGIN IMMEDIATE` + `fcntl.flock`); JSONL kept as export/compat mirror; legacy JSONL imported when SQLite empty
+- **Crash recovery**: stuck `executing` past TTL (`SQL_WRITE_GATE_EXECUTING_TTL_SEC`, default 120s) → `unknown`; restart must not silent re-claim / double-run SQL
+- **Concurrent multi-process approve**: at most one target DB write (multiprocessing regression in `tests/test_v021.py`)
+- Keep **非生产唯一边界**. No distributed locks, Web UI, or MySQL protocol proxy.
+
+### Docs / tests
+
+- README: three-state table + recovery rules; backlog post-0.21
+- Tests: `tests/test_v021.py`; v0.17–v0.20 suites (R1–R6, Windows flock fail-closed) stay green
+
 ## [0.20.0] — 2026-09-06
 
 ### Real databases & release acceptance
