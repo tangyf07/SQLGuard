@@ -193,8 +193,36 @@ def is_read_only(stmt: exp.Expression) -> bool:
     return isinstance(stmt, exp.Query) and not isinstance(stmt, write_types)
 
 
+def _is_unsupported_dialect_feature(stmt: exp.Expression) -> str | None:
+    """Return a short feature name if stmt is outside the support matrix."""
+    # MERGE / COPY / REPLACE / Command are ambiguous or dialect-specific writes.
+    for name, cls_name in (
+        ("MERGE", "Merge"),
+        ("COPY", "Copy"),
+        ("REPLACE", "Replace"),
+        ("COMMAND", "Command"),
+    ):
+        cls = getattr(exp, cls_name, None)
+        if cls is not None and isinstance(stmt, cls):
+            return name
+    return None
+
+
 def unsupported_read_reason(stmt: exp.Expression) -> tuple[str, str] | None:
-    """Explicit reject reasons for structures that must never silent-ALLOW as read-only."""
+    """Explicit reject reasons for structures that must never silent-ALLOW.
+
+    Covers both read-shaped and write-root statements. Anything dangerous /
+    ambiguous that is not on the SQL support matrix → unsupported_sql (not ALLOW).
+    """
+    feature = _is_unsupported_dialect_feature(stmt)
+    if feature:
+        return (
+            RULE_UNSUPPORTED,
+            (
+                f"{feature} is outside the sql-write-gate support matrix; "
+                "rejected (unsupported_sql)"
+            ),
+        )
     if _has_select_into(stmt):
         return (
             RULE_UNSUPPORTED,
@@ -212,6 +240,10 @@ def unsupported_read_reason(stmt: exp.Expression) -> tuple[str, str] | None:
             ),
         )
     return None
+
+
+# Back-compat alias used by older call sites / docs.
+unsupported_sql_reason = unsupported_read_reason
 
 
 def classify_operation(stmt: exp.Expression) -> str:
@@ -829,7 +861,11 @@ def parse(sql: str, dialect: str = "duckdb") -> ParsedSQL:
         parsed.error = "SQL 无法解析为空语句"
         return parsed
     if len(statements) != 1:
-        parsed.error = f"一次只允许一条语句，收到 {len(statements)} 条"
+        parsed.error = (
+            f"一次只允许一条语句，收到 {len(statements)} 条; "
+            "multi-statement SQL rejected (unsupported_sql)"
+        )
+        parsed.error_rule = RULE_UNSUPPORTED
         return parsed
 
     stmt = statements[0]
