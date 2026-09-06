@@ -1,6 +1,6 @@
 [project]
 name = "sql-write-gate"
-version = "1.0.0"
+version = "1.0.1"
 description = "Policy firewall for AI agents writing to databases (sql-write-gate)"
 readme = "README.md"
 license = { text = "MIT" }
