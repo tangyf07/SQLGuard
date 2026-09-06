@@ -14,12 +14,19 @@ from write_gate.adapters.base import (
 )
 from write_gate.approvals import (
     ApprovalError,
+    claim_for_execute,
     enqueue_approval,
     get_approval,
     mark_approved,
+    mark_failed,
     mark_rejected,
+    release_claim,
 )
-from write_gate.audit import append_audit
+from write_gate.audit import (
+    append_audit,
+    resolve_trusted_database_url,
+    url_has_redacted_password,
+)
 from write_gate.catalog import Catalog, load_catalog
 from write_gate.config import Policy, load_policy
 from write_gate.decision import ACTION_ALLOW, ACTION_APPROVAL, Decision, Evidence
@@ -69,6 +76,7 @@ class WriteGate:
             Path(approvals_path) if approvals_path else default_approvals_path()
         )
         self.agent = agent
+        self.database_config_id = None
         self._conn = conn
         self._owns_conn = conn is None
 
@@ -79,21 +87,39 @@ class WriteGate:
         return self._conn
 
     def _connect(self) -> Any:
+        target = self._resolved_database()
         if self.backend == BACKEND_POSTGRES:
             from write_gate.adapters.postgres import connect as pg_connect
 
-            return pg_connect(self.database)
+            return pg_connect(target)
         if self.backend == BACKEND_MYSQL:
             from write_gate.adapters.mysql import connect as mysql_connect
 
-            return mysql_connect(self.database)
+            return mysql_connect(target)
         if self.backend == BACKEND_SQLITE:
             from write_gate.adapters.sqlite import connect as sqlite_connect
 
-            return sqlite_connect(self.database)
+            return sqlite_connect(target)
         from write_gate.adapters.duckdb import connect as duck_connect
 
         return duck_connect(self.db_path)
+
+    def _resolved_database(self) -> str:
+        """Return a connectable database target; never use ``***`` as a password."""
+        raw = self.database
+        if raw and url_has_redacted_password(raw):
+            resolved = resolve_trusted_database_url(
+                raw,
+                preferred=None,
+                config_id=getattr(self, "database_config_id", None),
+            )
+            if not resolved or url_has_redacted_password(resolved):
+                raise ApprovalError(
+                    "cannot reconnect with redacted database password (***); "
+                    "bind trusted credentials via DATABASE_URL for the same DB target"
+                )
+            return resolved
+        return raw
 
     def _conn_if_available(self) -> Any | None:
         if self._conn is not None:
@@ -133,6 +159,7 @@ class WriteGate:
         *,
         executed: bool | None = None,
         execution_outcome: str | None = None,
+        error_class: str | None = None,
     ) -> None:
         append_audit(
             decision,
@@ -142,6 +169,7 @@ class WriteGate:
             database=self.database,
             executed=executed,
             execution_outcome=execution_outcome,
+            error_class=error_class,
         )
 
     def check(self, sql: str) -> Decision:
@@ -183,7 +211,16 @@ class WriteGate:
                 execution_outcome="blocked",
             )
             return decision, None
-        result = self._execute_user_sql(sql)
+        try:
+            result = self._execute_user_sql(sql)
+        except Exception as exc:
+            self._audit(
+                decision,
+                executed=False,
+                execution_outcome="failed",
+                error_class=type(exc).__name__,
+            )
+            raise
         self._audit(
             decision,
             executed=True,
@@ -192,26 +229,29 @@ class WriteGate:
         return decision, result
 
     def approve(self, approval_id: str) -> tuple[Decision, Any]:
-        """Load id, re-run guards with human approval, execute if ALLOW.
+        """Atomically claim pending→executing, re-run guards, execute if ALLOW.
 
         Clears environment 'approval' rules and PII SELECT approval for this
         queued statement. Destructive / PII-write / freshness / blast BLOCK
-        still apply. Idempotent: already-approved ids do not double-execute.
+        still apply. Only the claimer executes; a second approve sees
+        not-pending and does not write. Idempotent for already-approved ids.
         """
-        rec = get_approval(approval_id, path=self.approvals_path)
-        if rec is None:
+        existing = get_approval(approval_id, path=self.approvals_path)
+        if existing is None:
             raise ApprovalError(f"approval not found: {approval_id}")
-        if rec.status == "approved":
-            # Idempotent: do not execute again.
+        if existing.status == "approved":
             decision = Decision(
                 action=ACTION_ALLOW,
                 risk="low",
                 rule_id="ok",
-                reason=f"approval {rec.id} already approved (idempotent; not re-executed)",
-                sql=rec.sql,
-                approval_id=rec.id,
-                operation=(rec.decision or {}).get("operation"),
-                table=(rec.decision or {}).get("table"),
+                reason=(
+                    f"approval {existing.id} already approved "
+                    "(idempotent; not re-executed)"
+                ),
+                sql=existing.sql,
+                approval_id=existing.id,
+                operation=(existing.decision or {}).get("operation"),
+                table=(existing.decision or {}).get("table"),
             )
             self._audit(
                 decision,
@@ -219,8 +259,42 @@ class WriteGate:
                 execution_outcome="already_approved",
             )
             return decision, None
-        if rec.status != "pending":
-            raise ApprovalError(f"approval not pending: {approval_id}")
+
+        # Atomic claim under flock — closes the approve race window.
+        try:
+            rec = claim_for_execute(approval_id, path=self.approvals_path)
+        except ApprovalError:
+            # Re-read: may have become approved between get and claim.
+            again = get_approval(approval_id, path=self.approvals_path)
+            if again is not None and again.status == "approved":
+                decision = Decision(
+                    action=ACTION_ALLOW,
+                    risk="low",
+                    rule_id="ok",
+                    reason=(
+                        f"approval {again.id} already approved "
+                        "(idempotent; not re-executed)"
+                    ),
+                    sql=again.sql,
+                    approval_id=again.id,
+                    operation=(again.decision or {}).get("operation"),
+                    table=(again.decision or {}).get("table"),
+                )
+                self._audit(
+                    decision,
+                    executed=False,
+                    execution_outcome="already_approved",
+                )
+                return decision, None
+            raise
+
+        if rec.database_config_id:
+            self.database_config_id = rec.database_config_id
+        if rec.database and (
+            not self.database or url_has_redacted_password(str(self.database))
+        ):
+            self.database = rec.database
+
         saved_policy = self.policy
         try:
             self.policy = saved_policy.with_env_approvals_cleared()
@@ -229,13 +303,24 @@ class WriteGate:
             self.policy = saved_policy
         decision.approval_id = rec.id
         if decision.action != ACTION_ALLOW:
+            release_claim(rec.id, path=self.approvals_path, to_status="pending")
             self._audit(
                 decision,
                 executed=False,
                 execution_outcome="approve_blocked",
             )
             return decision, None
-        result = self._execute_user_sql(rec.sql)
+        try:
+            result = self._execute_user_sql(rec.sql)
+        except Exception as exc:
+            mark_failed(rec.id, path=self.approvals_path)
+            self._audit(
+                decision,
+                executed=False,
+                execution_outcome="failed",
+                error_class=type(exc).__name__,
+            )
+            raise
         mark_approved(rec.id, path=self.approvals_path)
         self._audit(
             decision,
