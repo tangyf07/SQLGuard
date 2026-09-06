@@ -1,6 +1,6 @@
 # Compatibility & SemVer (sql-write-gate 1.x)
 
-**Status:** v1.0.0 is **pilot-ready on the declared support matrix**.  
+**Status:** v1.0.1 is **pilot-ready on the declared support matrix** (same matrix as 1.0.0 + timeout/byte-limit fixes).  
 **边界:** **非生产唯一边界 / 非唯一边界** — not the sole production DB security boundary.
 
 ## What is covered by SemVer
