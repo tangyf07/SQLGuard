@@ -13,7 +13,12 @@ from write_gate.approvals import (
     list_pending,
     mark_rejected,
 )
-from write_gate.audit import format_audit_table, read_audit
+from write_gate.audit import (
+    format_audit_table,
+    read_audit,
+    resolve_trusted_database_url,
+    url_has_redacted_password,
+)
 from write_gate.decision import ACTION_ALLOW, ACTION_APPROVAL, ACTION_BLOCK, Decision
 from write_gate.paths import default_approvals_path, default_audit_path
 from write_gate.wrapper import WriteGate
@@ -66,26 +71,77 @@ def _gate_from_args(args: argparse.Namespace) -> WriteGate:
 
 
 def _gate_from_record(rec, *, approvals_path: Path, agent: str = "approve") -> WriteGate:
-    return WriteGate(
-        database=rec.database,
+    database = rec.database
+    if database and url_has_redacted_password(database):
+        resolved = resolve_trusted_database_url(
+            database,
+            config_id=getattr(rec, "database_config_id", None),
+        )
+        if resolved:
+            database = resolved
+        # else leave redacted; WriteGate._connect refuses *** and explains
+    gate = WriteGate(
+        database=database,
         db_path=Path(rec.db_path) if rec.db_path else None,
         catalog_path=Path(rec.catalog_path) if rec.catalog_path else None,
         policy_path=Path(rec.policy_path) if rec.policy_path else None,
         approvals_path=approvals_path,
         agent=agent,
     )
+    gate.database_config_id = getattr(rec, "database_config_id", None)
+    return gate
+
+def _serialize_cell(value: object) -> object:
+    """Make DB cell values JSON-serializable (dates, decimals, bytes)."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return iso()
+        except Exception:
+            pass
+    try:
+        from decimal import Decimal
+
+        if isinstance(value, Decimal):
+            return float(value)
+    except Exception:
+        pass
+    return str(value)
+
+
+def _materialize_result(result) -> dict[str, object] | None:
+    """Fetch rows before the connection closes; return serializable payload bits."""
+    if result is None:
+        return None
+    if isinstance(result, dict) and ("rows" in result or "rowcount" in result):
+        return result
+    try:
+        rows = result.fetchall()
+    except Exception:
+        return {"rowcount": getattr(result, "rowcount", None)}
+    material = []
+    for row in rows:
+        if isinstance(row, (list, tuple)):
+            material.append([_serialize_cell(c) for c in row])
+        else:
+            material.append(_serialize_cell(row))
+    return {"rows": material, "rowcount": len(material)}
 
 
 def _print_decision(decision: Decision, *, as_json: bool, result=None) -> int:
     if as_json:
         payload = decision.to_dict()
         if result is not None and decision.allowed:
-            try:
-                rows = result.fetchall()
-                payload["rows"] = [list(r) for r in rows]
-                payload["rowcount"] = len(payload["rows"])
-            except Exception:
-                payload["rowcount"] = getattr(result, "rowcount", None)
+            materialized = _materialize_result(result)
+            if materialized is not None:
+                if "rows" in materialized:
+                    payload["rows"] = materialized["rows"]
+                if "rowcount" in materialized:
+                    payload["rowcount"] = materialized["rowcount"]
         json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
     else:
@@ -95,7 +151,6 @@ def _print_decision(decision: Decision, *, as_json: bool, result=None) -> int:
     if decision.action == ACTION_APPROVAL:
         return 1
     return 2
-
 
 def _add_shared(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--policy", help="Path to policy.yaml (default: ./policy.yaml)")
@@ -299,22 +354,24 @@ def _cmd_approve(args: argparse.Namespace) -> int:
     if rec is None:
         sys.stderr.write(f"approval not found or not pending: {args.approval_id}\n")
         return 1
-    if rec.status not in {"pending", "approved"}:
+    if rec.status not in {"pending", "approved", "failed"}:
         sys.stderr.write(f"approval not found or not pending: {args.approval_id}\n")
         return 1
+    materialized = None
     with _gate_from_record(rec, approvals_path=path, agent="approve") as gate:
         try:
             decision, result = gate.approve(rec.id)
+            # Materialize rows before closing the connection (R3).
+            materialized = _materialize_result(result)
         except ApprovalError as exc:
             sys.stderr.write(str(exc) + "\n")
             return 1
-    return _print_decision(decision, as_json=bool(args.json), result=result)
-
+    return _print_decision(decision, as_json=bool(args.json), result=materialized)
 
 def _cmd_reject(args: argparse.Namespace) -> int:
     path = _approvals_path(args)
     rec = get_approval(args.approval_id, path=path)
-    if rec is None or rec.status != "pending":
+    if rec is None or rec.status not in {"pending", "failed"}:
         sys.stderr.write(f"approval not found or not pending: {args.approval_id}\n")
         return 1
     try:
@@ -393,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
             result = None
         else:
             decision, result = gate.execute(args.sql)
+            result = _materialize_result(result)
     return _print_decision(decision, as_json=bool(args.json), result=result)
 
 
