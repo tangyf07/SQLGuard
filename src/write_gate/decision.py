@@ -35,6 +35,12 @@ RULE_AMBIGUOUS_READ = "ambiguous_read"
 RULE_ENV = "environment_policy"
 RULE_RAW_DB_CLI = "raw_db_cli"
 
+RULE_CARTESIAN = "cartesian_join"
+RULE_FULL_TABLE = "full_table_write"
+RULE_PERMISSION = "table_permission"
+RULE_HALLUCINATION = "schema_hallucination"
+RULE_EXPLAIN_COST = "explain_cost"
+
 
 @dataclass
 class GuardResult:
@@ -115,6 +121,8 @@ class Decision:
     table: str | None = None
     estimated_rows: int | None = None
     approval_id: str | None = None
+    risk_score: int = 0  # 0–100 numeric risk (SQLGuard)
+    risk_factors: list[str] = field(default_factory=list)
 
     @property
     def allowed(self) -> bool:
@@ -138,6 +146,8 @@ class Decision:
             "table": self.table,
             "estimated_rows": self.estimated_rows,
             "approval_id": self.approval_id,
+            "risk_score": self.risk_score,
+            "risk_factors": list(self.risk_factors),
         }
         return payload
 

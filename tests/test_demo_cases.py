@@ -71,7 +71,7 @@ def test_schema_mismatch_rejected_no_write(gate):
     ev, result = gate.execute(SCHEMA_MISMATCH_SQL)
     after = gate.conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
     assert ev.allowed is False
-    assert ev.rule_id == "schema_mismatch"
+    assert ev.rule_id == "schema_hallucination"
     assert result is None
     assert after == before
 

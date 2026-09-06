@@ -21,7 +21,8 @@ def create_server(
     policy: str | None = None,
     agent: str = "mcp",
 ):
-    """Build a FastMCP server exposing query_sql and write_sql (ALLOW executes)."""
+    """Build a FastMCP server exposing query/write + DataPilot BLOCK/EXECUTE."""
+    from write_gate.mcp_tools import datapilot_check, datapilot_execute
     from write_gate.mcp_tools import query_sql as check_query
     from write_gate.mcp_tools import write_sql as check_write
 
@@ -44,6 +45,28 @@ def create_server(
     def write_sql(sql: str) -> dict[str, Any]:
         """Evaluate INSERT/UPDATE/DELETE/DDL through sql-write-gate. ALLOW executes."""
         return check_write(sql, **gate_kwargs)
+
+    @mcp.tool()
+    def datapilot_block_or_execute(
+        sql: str,
+        execute: bool = False,
+        actor: str | None = None,
+        model_id: str | None = None,
+        prompt_summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Stable DataPilot API: returns datapilot=BLOCK|EXECUTE|APPROVAL.
+
+        When execute=false (default), only evaluates. When execute=true, runs
+        SQL only if the gate returns ALLOW.
+        """
+        fn = datapilot_execute if execute else datapilot_check
+        return fn(
+            sql,
+            actor=actor,
+            model_id=model_id,
+            prompt_summary=prompt_summary,
+            **gate_kwargs,
+        )
 
     return mcp
 

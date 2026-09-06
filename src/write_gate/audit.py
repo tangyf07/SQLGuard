@@ -184,6 +184,11 @@ def append_audit(
     execution_outcome: str | None = None,
     error_class: str | None = None,
     request_id: str | None = None,
+    actor: str | None = None,
+    model_id: str | None = None,
+    prompt_summary: str | None = None,
+    latency_ms: float | None = None,
+    success: bool | None = None,
 ) -> None:
     """Append one audit JSONL record with correlatable ids (v0.23).
 
@@ -200,10 +205,18 @@ def append_audit(
     from write_gate.runtime import new_request_id
 
     rid = new_request_id(request_id)
+    # success: explicit override, else infer from executed / action
+    if success is None:
+        if executed is not None:
+            success = bool(executed)
+        else:
+            success = decision.action == "ALLOW"
+
     record: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "request_id": rid,
         "agent": agent,
+        "actor": actor or agent,
         "environment": environment,
         "sql": decision.sql,
         "operation": decision.operation,
@@ -211,6 +224,10 @@ def append_audit(
         "estimated_rows": decision.estimated_rows,
         "decision": decision.action,
         "rule_id": decision.rule_id,
+        "risk": decision.risk,
+        "risk_score": getattr(decision, "risk_score", 0),
+        "risk_factors": list(getattr(decision, "risk_factors", None) or []),
+        "success": success,
     }
     if decision.approval_id:
         record["approval_id"] = decision.approval_id
@@ -222,6 +239,12 @@ def append_audit(
         record["execution_outcome"] = execution_outcome
     if error_class is not None:
         record["error_class"] = error_class
+    if model_id is not None:
+        record["model_id"] = model_id
+    if prompt_summary is not None:
+        record["prompt_summary"] = str(prompt_summary)[:500]
+    if latency_ms is not None:
+        record["latency_ms"] = round(float(latency_ms), 3)
     dest = Path(path) if path else default_audit_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
     maybe_rotate(dest)
@@ -273,19 +296,25 @@ def format_audit_table(rows: Iterable[dict[str, Any]]) -> str:
     records = list(rows)
     if not records:
         return EMPTY_AUDIT_MESSAGE
-    headers = ("TIME", "SOURCE", "OP", "TABLE", "VERDICT", "RULE")
+    show_risk = any(rec.get("risk_score") is not None for rec in records)
+    if show_risk:
+        headers = ("TIME", "SOURCE", "OP", "TABLE", "VERDICT", "RULE", "RISK")
+    else:
+        headers = ("TIME", "SOURCE", "OP", "TABLE", "VERDICT", "RULE")
     extracted: list[tuple[str, ...]] = []
     for rec in records:
-        extracted.append(
-            (
-                format_audit_time(rec.get("timestamp")),
-                str(rec.get("agent") or "-"),
-                str(rec.get("operation") or "-"),
-                str(rec.get("table") or "-"),
-                format_verdict(rec.get("decision")),
-                str(rec.get("rule_id") or "-"),
-            )
+        base = (
+            format_audit_time(rec.get("timestamp")),
+            str(rec.get("actor") or rec.get("agent") or "-"),
+            str(rec.get("operation") or "-"),
+            str(rec.get("table") or "-"),
+            format_verdict(rec.get("decision")),
+            str(rec.get("rule_id") or "-"),
         )
+        if show_risk:
+            score = rec.get("risk_score")
+            base = base + (str(score) if score is not None else "-",)
+        extracted.append(base)
     widths = [len(h) for h in headers]
     for row in extracted:
         for i, cell in enumerate(row):

@@ -47,7 +47,7 @@ def test_pii_insert_rejected():
 def test_schema_unknown_column_rejected():
     ev = evaluate(SCHEMA_MISMATCH_SQL, _catalog())
     assert ev.allowed is False
-    assert ev.rule_id == "schema_mismatch"
+    assert ev.rule_id == "schema_hallucination"
     assert "not_a_column" in ev.message
 
 
@@ -63,7 +63,7 @@ def test_unknown_table_rejected():
         _catalog(),
     )
     assert ev.allowed is False
-    assert ev.rule_id == "schema_mismatch"
+    assert ev.rule_id == "schema_hallucination"
 
 
 def test_pii_update_rejected():
@@ -92,7 +92,7 @@ def test_select_star_requires_approval_for_pii():
 
 
 def test_select_pii_column_requires_approval():
-    ev = evaluate("SELECT id, email FROM orders LIMIT 10", _catalog())
+    ev = evaluate("SELECT order_id, email FROM orders LIMIT 10", _catalog())
     assert ev.action == "REQUIRE_APPROVAL"
     assert ev.rule_id == "pii_column"
     assert ev.allowed is False
