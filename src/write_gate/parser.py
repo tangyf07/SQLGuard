@@ -165,11 +165,17 @@ def _has_select_into(stmt: exp.Expression) -> bool:
 
 
 def _nested_dml_nodes(stmt: exp.Expression) -> list[exp.Expression]:
-    """DML nested under a non-DML root (e.g. data-modifying CTE)."""
+    """DML nested under any root (SELECT or INSERT/UPDATE/DELETE).
+
+    Catches data-modifying CTEs such as::
+
+        WITH d AS (DELETE FROM orders RETURNING *)
+        INSERT INTO orders(...) VALUES(...);
+
+    The root statement itself is excluded; only nested DML nodes are returned.
+    """
     write_types = _write_types()
     if not write_types:
-        return []
-    if isinstance(stmt, write_types):
         return []
     return [n for n in stmt.find_all(*write_types) if n is not stmt]
 
@@ -201,7 +207,7 @@ def unsupported_read_reason(stmt: exp.Expression) -> tuple[str, str] | None:
             RULE_UNSUPPORTED,
             (
                 "Data-modifying CTE / nested DML "
-                f"({', '.join(kinds)}) is not supported as read-only; "
+                f"({', '.join(kinds)}) under the statement root is not supported; "
                 "rejected (unsupported_sql)"
             ),
         )
@@ -490,88 +496,284 @@ def expired_partition_touch(
 ) -> date | None:
     """Return one expired partition date if WHERE can match rows before cutoff.
 
-    Handles ``=`` / ``IN`` / ``BETWEEN`` / ``<`` ``<=`` ``>`` ``>=`` (and flipped
-    literals). Fail closed on unparseable past-open ranges.
+    Boolean structure is respected:
+    - AND → intersect match sets (so ``dt >= cutoff AND dt < upper`` may be fresh)
+    - OR  → union (a branch that ignores the partition opens all dates)
+    - NOT → complement (``NOT (dt >= cutoff)`` touches expired)
+
+    If the partition column is never mentioned, return None so blast-radius owns
+    scope. Unparseable partition predicates fail closed.
     """
     if where is None or not part:
         return None
+    if not _mentions_partition(where, part):
+        return None
+    match = _partition_match(where, part)
+    if match is _MATCH_UNKNOWN:
+        return date.min
+    if match is _MATCH_EMPTY:
+        return None
+    if match is _MATCH_FULL:
+        # Partition mentioned but match covers all dates (e.g. OR with
+        # unconstrained branch) → fail closed.
+        return date.min
     hits: list[date] = []
-
-    def consider(d: date | None) -> None:
-        if d is not None and d < cutoff:
-            hits.append(d)
-
-    def visit(node: exp.Expression) -> None:
-        if isinstance(node, exp.In) and ident(node.this) == part:
-            for item in node.expressions:
-                consider(parse_date(literal_value(item)))
-            return
-        if isinstance(node, exp.Between) and ident(node.this) == part:
-            low = parse_date(literal_value(node.args.get("low")))
-            high = parse_date(literal_value(node.args.get("high")))
-            # [low, high] intersects (-inf, cutoff) iff low is missing or low < cutoff.
-            if low is None:
-                hits.append(date.min)
-            elif low < cutoff:
-                hits.append(low)
-            return
-        if isinstance(node, exp.EQ):
-            left, right = node.this, node.expression
-            if ident(left) == part:
-                consider(parse_date(literal_value(right)))
-            elif ident(right) == part:
-                consider(parse_date(literal_value(left)))
-            return
-        if isinstance(node, (exp.LT, exp.LTE, exp.GT, exp.GTE)):
-            left, right = node.this, node.expression
-            if ident(left) == part:
-                lit = parse_date(literal_value(right))
-                op = type(node)
-            elif ident(right) == part:
-                lit = parse_date(literal_value(left))
-                op = {
-                    exp.LT: exp.GT,
-                    exp.LTE: exp.GTE,
-                    exp.GT: exp.LT,
-                    exp.GTE: exp.LTE,
-                }[type(node)]
+    for lo, hi in match:
+        if _range_intersects_expired(lo, hi, cutoff):
+            if lo is not None and lo < cutoff:
+                hits.append(lo)
             else:
-                for child in node.iter_expressions():
-                    visit(child)
-                return
-            if op in (exp.LT, exp.LTE):
-                # part < lit / part <= lit always opens to -inf → touches expired.
-                if lit is not None and lit <= cutoff:
-                    # all matched dates are < cutoff (for LT) or <= lit <= cutoff
-                    hits.append(date.min if lit >= cutoff else lit)
-                else:
-                    # lit > cutoff still includes dates < cutoff
-                    hits.append(date.min)
-                return
-            if op == exp.GT:
-                # part > lit → matched dates start at lit+1 day.
-                if lit is None:
-                    hits.append(date.min)
-                else:
-                    # touches expired if lit+1 day < cutoff i.e. lit < cutoff - 1 day
-                    # equivalently: if there exists d, lit < d < cutoff
-                    nxt = lit + timedelta(days=1)
-                    if nxt < cutoff:
-                        hits.append(nxt)
-                return
-            if op == exp.GTE:
-                # part >= lit touches expired iff lit < cutoff
-                if lit is None:
-                    hits.append(date.min)
-                elif lit < cutoff:
-                    hits.append(lit)
-                return
-            return
-        for child in node.iter_expressions():
-            visit(child)
-
-    visit(where)
+                hits.append(date.min)
     return min(hits) if hits else None
+
+
+def _mentions_partition(node: exp.Expression, part: str) -> bool:
+    if ident(node) == part:
+        return True
+    if isinstance(node, exp.Column) and ident(node) == part:
+        return True
+    return any(_mentions_partition(c, part) for c in node.iter_expressions())
+
+
+# Match-set sentinels for partition analysis (not user-visible).
+_MATCH_FULL = object()
+_MATCH_EMPTY = object()
+_MATCH_UNKNOWN = object()
+
+
+def _range_intersects_expired(
+    lo: date | None, hi: date | None, cutoff: date
+) -> bool:
+    """True if [lo, hi) intersects (-inf, cutoff) i.e. can match d < cutoff."""
+    if lo is not None and hi is not None and lo >= hi:
+        return False
+    end = cutoff if hi is None else (hi if hi < cutoff else cutoff)
+    if lo is None:
+        return True
+    return lo < end
+
+
+def _intersect_ranges(
+    left: list[tuple[date | None, date | None]],
+    right: list[tuple[date | None, date | None]],
+) -> list[tuple[date | None, date | None]]:
+    out: list[tuple[date | None, date | None]] = []
+    for a_lo, a_hi in left:
+        for b_lo, b_hi in right:
+            # max lo (None = -inf)
+            if a_lo is None:
+                lo = b_lo
+            elif b_lo is None:
+                lo = a_lo
+            else:
+                lo = max(a_lo, b_lo)
+            # min hi (None = +inf)
+            if a_hi is None:
+                hi = b_hi
+            elif b_hi is None:
+                hi = a_hi
+            else:
+                hi = min(a_hi, b_hi)
+            if lo is not None and hi is not None and lo >= hi:
+                continue
+            out.append((lo, hi))
+    return out
+
+
+def _complement_ranges(
+    ranges: list[tuple[date | None, date | None]],
+) -> list[tuple[date | None, date | None]]:
+    """Complement of a union of [lo, hi) relative to (-inf, +inf)."""
+    if not ranges:
+        return [(None, None)]
+    # Normalize / merge overlapping then punch holes.
+    norm = _merge_ranges(ranges)
+    out: list[tuple[date | None, date | None]] = []
+    cursor: date | None = None  # start of current gap (-inf)
+    for lo, hi in norm:
+        # gap [cursor, lo)
+        if lo is None:
+            # covers from -inf; no left gap
+            pass
+        else:
+            if cursor is None or cursor < lo:
+                out.append((cursor, lo))
+        # advance cursor to hi
+        if hi is None:
+            return out  # covered through +inf
+        if cursor is None or (hi is not None and (cursor is None or cursor < hi)):
+            cursor = hi
+    out.append((cursor, None))
+    return out
+
+
+def _merge_ranges(
+    ranges: list[tuple[date | None, date | None]],
+) -> list[tuple[date | None, date | None]]:
+    def sort_key(r: tuple[date | None, date | None]):
+        lo, _hi = r
+        return (lo is not None, lo or date.min)
+
+    ordered = sorted(ranges, key=sort_key)
+    merged: list[tuple[date | None, date | None]] = []
+    for lo, hi in ordered:
+        if not merged:
+            merged.append((lo, hi))
+            continue
+        m_lo, m_hi = merged[-1]
+        if m_hi is not None and lo is not None and lo > m_hi:
+            merged.append((lo, hi))
+            continue
+        new_lo = None if m_lo is None or lo is None else min(m_lo, lo)
+        new_hi = None if m_hi is None or hi is None else max(m_hi, hi)
+        merged[-1] = (new_lo, new_hi)
+    return merged
+
+
+def _and_match(a, b):
+    if a is _MATCH_UNKNOWN or b is _MATCH_UNKNOWN:
+        return _MATCH_UNKNOWN
+    if a is _MATCH_EMPTY or b is _MATCH_EMPTY:
+        return _MATCH_EMPTY
+    if a is _MATCH_FULL:
+        return b
+    if b is _MATCH_FULL:
+        return a
+    inter = _intersect_ranges(a, b)
+    return inter if inter else _MATCH_EMPTY
+
+
+def _or_match(a, b):
+    if a is _MATCH_UNKNOWN or b is _MATCH_UNKNOWN:
+        return _MATCH_UNKNOWN
+    if a is _MATCH_FULL or b is _MATCH_FULL:
+        return _MATCH_FULL
+    if a is _MATCH_EMPTY:
+        return b
+    if b is _MATCH_EMPTY:
+        return a
+    return _merge_ranges([*a, *b])
+
+
+def _not_match(inner):
+    if inner is _MATCH_UNKNOWN:
+        return _MATCH_UNKNOWN
+    if inner is _MATCH_FULL:
+        return _MATCH_EMPTY
+    if inner is _MATCH_EMPTY:
+        return _MATCH_FULL
+    comp = _complement_ranges(inner)
+    return comp if comp else _MATCH_EMPTY
+
+
+def _day_after(d: date) -> date | None:
+    try:
+        return d + timedelta(days=1)
+    except OverflowError:
+        return None
+
+
+def _atomic_partition_match(
+    node: exp.Expression, part: str
+):
+    """If node constrains ``part``, return match set; else None (not a constraint)."""
+    if isinstance(node, exp.In) and ident(node.this) == part:
+        ranges: list[tuple[date | None, date | None]] = []
+        for item in node.expressions:
+            d = parse_date(literal_value(item))
+            if d is None:
+                return _MATCH_UNKNOWN
+            nxt = _day_after(d)
+            ranges.append((d, nxt))
+        return _merge_ranges(ranges) if ranges else _MATCH_EMPTY
+    if isinstance(node, exp.Between) and ident(node.this) == part:
+        low = parse_date(literal_value(node.args.get("low")))
+        high = parse_date(literal_value(node.args.get("high")))
+        if low is None and high is None:
+            return _MATCH_UNKNOWN
+        hi = _day_after(high) if high is not None else None
+        return [(low, hi)]
+    if isinstance(node, exp.EQ):
+        left, right = node.this, node.expression
+        if ident(left) == part:
+            d = parse_date(literal_value(right))
+        elif ident(right) == part:
+            d = parse_date(literal_value(left))
+        else:
+            return None
+        if d is None:
+            return _MATCH_UNKNOWN
+        return [(d, _day_after(d))]
+    if isinstance(node, (exp.LT, exp.LTE, exp.GT, exp.GTE, exp.NEQ)):
+        left, right = node.this, node.expression
+        if ident(left) == part:
+            lit = parse_date(literal_value(right))
+            op = type(node)
+        elif ident(right) == part:
+            lit = parse_date(literal_value(left))
+            op = {
+                exp.LT: exp.GT,
+                exp.LTE: exp.GTE,
+                exp.GT: exp.LT,
+                exp.GTE: exp.LTE,
+                exp.NEQ: exp.NEQ,
+            }[type(node)]
+        else:
+            return None
+        if lit is None and op is not exp.NEQ:
+            return _MATCH_UNKNOWN
+        if op is exp.LT:
+            return [(None, lit)]
+        if op is exp.LTE:
+            return [(None, _day_after(lit))]
+        if op is exp.GT:
+            return [(_day_after(lit), None)]
+        if op is exp.GTE:
+            return [(lit, None)]
+        if op is exp.NEQ:
+            if lit is None:
+                return _MATCH_UNKNOWN
+            # all dates except lit
+            return _complement_ranges([(lit, _day_after(lit))])
+    return None
+
+
+def _partition_match(node: exp.Expression, part: str):
+    """Match-set of dates satisfying ``node`` for partition column ``part``."""
+    if isinstance(node, exp.Paren):
+        return _partition_match(node.this, part) if node.this is not None else _MATCH_FULL
+    if isinstance(node, exp.Not):
+        inner = node.this
+        if inner is None:
+            return _MATCH_UNKNOWN
+        return _not_match(_partition_match(inner, part))
+    if isinstance(node, exp.And):
+        return _and_match(
+            _partition_match(node.this, part),
+            _partition_match(node.expression, part),
+        )
+    if isinstance(node, exp.Or):
+        return _or_match(
+            _partition_match(node.this, part),
+            _partition_match(node.expression, part),
+        )
+
+    atomic = _atomic_partition_match(node, part)
+    if atomic is not None:
+        return atomic
+
+    # Non-partition predicate: unconstrained on the partition column.
+    # If the node still nests partition constraints (e.g. function wrappers),
+    # walk children with AND semantics only when every child is present; otherwise FULL.
+    children = list(node.iter_expressions())
+    if not children:
+        return _MATCH_FULL
+    # If any descendant is a partition constraint buried under an unknown node,
+    # fail closed when we cannot interpret the wrapper.
+    if _mentions_partition(node, part):
+        return _MATCH_UNKNOWN
+    return _MATCH_FULL
+
 
 
 def partition_dates_from_assignments(
