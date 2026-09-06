@@ -15,8 +15,9 @@ Prevent Claude Code, Codex, Cursor and MCP agents from executing unsafe database
 
 Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No API key.**
 
-> **非生产唯一边界** — Early gate prototype; **not** the sole production security boundary.
-> **未列语法拒绝** — unsupported / ambiguous SQL → REJECT/BLOCK (fail closed), never silent ALLOW as read-only.
+> **v1.0.0 — pilot-ready on the declared support matrix** (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
+> **非生产唯一边界 / 非唯一边界** — **not** the sole production DB security boundary. Combine with least-privilege DB roles, network isolation, and human workflows.
+> **未列语法拒绝** — unsupported / ambiguous SQL → REJECT/BLOCK (`unsupported_sql`, fail closed), never silent ALLOW as read-only.
 
 ## Install
 
@@ -40,7 +41,16 @@ sql-write-gate check "DELETE FROM users"
 # → BLOCKED  rule=delete_without_where
 ```
 
-## Commands
+## Entrypoints (stable)
+
+| Entrypoint | Role |
+|------------|------|
+| CLI `check` | Evaluate SQL; no execute |
+| CLI `hook` | PreToolUse: block raw `psql` / `mysql` / … |
+| CLI `mcp` | MCP stdio (`query_sql` / `write_sql`) |
+| CLI `proxy` | Gate then execute if ALLOW |
+| CLI `approve` / `resolve` / `reject` | Human approve / recover (trusted executor + token) |
+| CLI `audit` / `pending` / `init` / `exec` | Ops helpers |
 
 ```bash
 sql-write-gate check "SQL"       # evaluate SQL; no execute
@@ -53,7 +63,32 @@ sql-write-gate audit             # TIME / SOURCE / OP / TABLE / VERDICT
 sql-write-gate init              # scaffold policy.yaml + catalog.json
 ```
 
-## What it does (current)
+## Declared databases (supported)
+
+| Backend | How to connect | Notes |
+|---------|----------------|-------|
+| **DuckDB** | file path / default `seed/warehouse.duckdb` | Default local warehouse |
+| **PostgreSQL** | `POSTGRES_URL` or `postgresql://…` / `postgres://…` | Extra: `sql-write-gate[postgres]` |
+| **MySQL** | `MYSQL_URL` or `mysql://…` / `mysql+pymysql://…` | Extra: `sql-write-gate[mysql]` |
+| **SQLite** | `sqlite:///` / `sqlite+aiosqlite://` (incl. `C:/…`) | stdlib |
+
+Priority: `database=` → `database_url=` → `db_path=` → `POSTGRES_URL` → `MYSQL_URL` → `DATABASE_URL` → DuckDB default.
+
+Anything **not** in this matrix (other warehouses, wire-protocol proxies, distributed locks, Web UI) is **out of scope** for v1.0.
+
+## SQL support matrix
+
+| Supported (gated) | Explicitly rejected (`unsupported_sql` BLOCK) |
+|-------------------|-----------------------------------------------|
+| Single-statement `SELECT` / `INSERT` / `UPDATE` / `DELETE` | Multi-statement scripts (`stmt1; stmt2`) |
+| DuckDB / PostgreSQL / MySQL / SQLite dialects via adapters | `MERGE` / `COPY` / `REPLACE` / raw `Command` |
+| Simple CTEs over read-only SELECT | Data-modifying CTE / nested DML under any root |
+| UPSERT `ON CONFLICT DO UPDATE` (PII/restricted on SET cols) | PostgreSQL `SELECT … INTO` |
+| Catalog-backed schema / PII / freshness / blast-radius | Ambiguous or unlisted write-shaped SQL |
+
+**Anything not listed on the supported side → `unsupported_sql`** (BLOCK/REJECT, fail closed). Never silent ALLOW.
+
+## What it does (on the matrix)
 
 - `DROP` / `TRUNCATE` / `ALTER` → BLOCK
 - `DELETE` / `UPDATE` without `WHERE` → BLOCK
@@ -65,7 +100,6 @@ sql-write-gate init              # scaffold policy.yaml + catalog.json
 - Atomic claim under `fcntl.flock` + SQLite `BEGIN IMMEDIATE` (single-host; fail closed without flock)
 - Three-state execute outcomes; **`unknown`/`executing` never auto-retried** — use `resolve` or `approve --allow-unknown-retry` after manual DB verify
 - JSONL audit (redacts URL passwords; records execute failures / unknown; `request_id` + `approval_id` + `execution_outcome` correlation; rotatable)
-- Adapters: **DuckDB** (default), **PostgreSQL**, **MySQL**, **SQLite**
 
 ## Platform support matrix
 
@@ -80,7 +114,7 @@ sql-write-gate init              # scaffold policy.yaml + catalog.json
 
 Windows: install, CLI evaluate/execute on DuckDB/SQLite/URL backends work. Approval mutations require Unix `fcntl` flock (plus SQLite transactions); without flock they **refuse** rather than silently degrading.
 
-### Approval outcomes & crash recovery (v0.21)
+### Approval outcomes & crash recovery
 
 | Status | Meaning | Default `approve` |
 |--------|---------|-------------------|
@@ -109,8 +143,6 @@ Recovery rules:
 | `sqlite:///` / `sqlite+aiosqlite://` | SQLite (stdlib) |
 | file path / default `seed/warehouse.duckdb` | DuckDB |
 
-Priority: `database=` → `database_url=` → `db_path=` → `POSTGRES_URL` → `MYSQL_URL` → `DATABASE_URL` → DuckDB default.
-
 ### Live integration tests (optional locally)
 
 ```bash
@@ -138,14 +170,52 @@ Guards (any **BLOCK** wins, else any **APPROVAL**, else **ALLOW**):
 
 `destructive` → `schema` → `pii` → `freshness` → `blast_radius` → `environment`
 
+## Stable interfaces
+
+Public surfaces for SemVer (see [docs/compatibility.md](docs/compatibility.md)):
+
+### CLI (public commands)
+
+`check` · `exec` · `hook` · `mcp` · `proxy` · `approve` · `resolve` · `reject` · `pending` · `audit` · `init`
+
+### Python API
+
+```python
+from write_gate import WriteGate, Decision, Evidence  # Evidence is Decision alias
+
+with WriteGate(database="postgresql://…") as gate:
+    decision = gate.check("DELETE FROM orders WHERE order_id = 1")
+    decision, result = gate.execute("SELECT 1")
+    decision, result = gate.approve(approval_id)  # trusted executor + token env
+    gate.reject(approval_id)
+```
+
+Key methods: `check`, `execute`, `approve`, `reject`, `close` / context manager.
+
+### Decision JSON fields (`Decision.to_dict()` / `--json`)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `allowed` | bool | True only for `ALLOW` |
+| `action` | str | `ALLOW` \| `BLOCK` \| `REQUIRE_APPROVAL` |
+| `risk` | str | `low` \| `medium` \| `critical` |
+| `rule_id` | str | e.g. `ok`, `delete_without_where`, `unsupported_sql` |
+| `reason` / `message` | str | Human-readable (same text) |
+| `evidence` | object | Guard evidence map |
+| `sql` | str | Evaluated statement |
+| `operation` | str \| null | `select` / `insert` / `update` / `delete` / `ddl` |
+| `table` | str \| null | Primary table when known |
+| `estimated_rows` | int \| null | Blast-radius estimate |
+| `approval_id` | str \| null | When queued for approval |
+| `rows` / `rowcount` / `truncated` | optional | Present on execute/approve `--json` when materializing |
+
 ## Decision model
 
 `ALLOW` | `BLOCK` | `REQUIRE_APPROVAL` with `risk`, `rule_id`, `reason`, `evidence`.
 
-
 ## Deployment model (trusted executor)
 
-**非生产唯一边界** — this gate is not the sole production security control.
+**非生产唯一边界 / 非唯一边界** — this gate is not the sole production security control.
 
 | Concern | Where it lives |
 |---------|----------------|
@@ -158,47 +228,48 @@ Guards (any **BLOCK** wins, else any **APPROVAL**, else **ALLOW**):
 
 1. On the trusted executor, create a secret file (default `.logs/approval.key`, or set `SQL_WRITE_GATE_APPROVAL_KEY_FILE`).
 2. When calling `approve` / `resolve` / `reject`, set env `SQL_WRITE_GATE_APPROVAL_TOKEN` to that file's contents.
-3. Missing key file, missing token, or wrong token → **refuse** (CLI exit non-zero). Correct token → 0.21 behavior.
+3. Missing key file, missing token, or wrong token → **refuse** (CLI exit non-zero). Correct token → approve/resolve/reject proceeds.
 4. Agents must **not** receive the key file or token. They may still enqueue `REQUIRE_APPROVAL` via normal write paths.
 
 ### Target binding
 
 Approval records store `database_config_id` (fingerprint). Approve reconnect binds trusted credentials only for the **same** target. Queue against DB A then change env to DB B → approve **fail closed** (will not write to B).
 
-## SQL support matrix
-
-| Supported (gated) | Explicitly rejected (`unsupported_sql` BLOCK) |
-|-------------------|-----------------------------------------------|
-| Single-statement `SELECT` / `INSERT` / `UPDATE` / `DELETE` | Multi-statement scripts (`stmt1; stmt2`) |
-| DuckDB / PostgreSQL / MySQL / SQLite dialects via adapters | `MERGE` / `COPY` / `REPLACE` / raw `Command` |
-| Simple CTEs over read-only SELECT | Data-modifying CTE / nested DML under any root |
-| UPSERT `ON CONFLICT DO UPDATE` (PII/restricted on SET cols) | PostgreSQL `SELECT … INTO` |
-| Catalog-backed schema / PII / freshness / blast-radius | Ambiguous or unlisted write-shaped SQL |
-
-Anything dangerous or ambiguous **not** on the supported side → `unsupported_sql` BLOCK/REJECT (fail closed), never silent ALLOW.
-
 ## Boundaries (non-goals)
 
-- **非生产唯一边界** — combine with least-privilege DB roles, network isolation, and human workflows
+- **非生产唯一边界 / 非唯一边界** — combine with least-privilege DB roles, network isolation, and human workflows
 - Not a distributed approval lock, MySQL wire-protocol proxy, or Web UI
 - Not an enterprise DQ / lineage / ChatBI / multi-tenant platform
+- Not new cloud warehouses beyond the declared DuckDB / PostgreSQL / MySQL / SQLite matrix
 
-See [docs/troubleshooting.md](docs/troubleshooting.md) for common failures, `unknown` recovery, approval token, credentials, and real-DB CI.
+## Docs (v1.0)
 
-See [CHANGELOG.md](CHANGELOG.md) for version history (v0.1 → v0.23).
+| Doc | Purpose |
+|-----|---------|
+| [docs/compatibility.md](docs/compatibility.md) | SemVer / breaking-change policy |
+| [docs/upgrade-0.23-to-1.0.md](docs/upgrade-0.23-to-1.0.md) | Upgrade path from 0.23 |
+| [docs/pilot-checklist.md](docs/pilot-checklist.md) | Pilot evidence pack |
+| [docs/v1-acceptance.md](docs/v1-acceptance.md) | System acceptance scenarios + proof |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common failures, `unknown`, token, CI |
 
-## Ops knobs (v0.23)
+See [CHANGELOG.md](CHANGELOG.md) for version history.
+
+## Ops knobs
 
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | `0` (off) | Statement timeout for check/execute/approve |
 | `SQL_WRITE_GATE_RESULT_ROW_LIMIT` | `1000` | Cap SELECT/approve rows (truncate + `truncated=true`) |
 | `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` | `0` (off) | Optional materialized-result byte cap |
+| `SQL_WRITE_GATE_RESULT_OVERSIZE` | `truncate` | `truncate` or `block` when over cap |
 | `SQL_WRITE_GATE_AUDIT_MAX_BYTES` | `10 MiB` | Rotate audit / approvals JSONL by size |
 | `SQL_WRITE_GATE_AUDIT_ROTATE_DAILY` | `false` | Also rotate JSONL per UTC day |
 | `SQL_WRITE_GATE_REQUEST_ID` | auto uuid4 | Audit correlation id |
+| `SQL_WRITE_GATE_EXECUTING_TTL_SEC` | `120` | Stuck `executing` → `unknown` |
+| `SQL_WRITE_GATE_APPROVAL_TOKEN` | (required for approve) | Presenter token |
+| `SQL_WRITE_GATE_APPROVAL_KEY_FILE` | `.logs/approval.key` | Trusted-executor key path |
 
-## Backlog (post-0.23)
+## Backlog (post-1.0)
 
 - [x] Statement timeout + failed/unknown mapping (0.23)
 - [x] Result row/byte caps with truncate flag (0.23)
@@ -215,9 +286,11 @@ See [CHANGELOG.md](CHANGELOG.md) for version history (v0.1 → v0.23).
 - [x] R1–R6 permanent regression (dangerous + safe paths) (0.20)
 - [x] Windows support matrix + flock fail-closed (0.20)
 - [x] Release gate: wheel install smoke; publish needs test+build on same tag (0.20)
+- [x] **v1.0.0** limited support-matrix pilot-ready packaging + upgrade/acceptance docs
 - [ ] Deferred: distributed / multi-host approval lock
 - [ ] Deferred: MySQL wire-protocol proxy
 - [ ] Deferred: Web UI
+- [ ] Deferred: additional cloud warehouses
 
 ## 许可
 
