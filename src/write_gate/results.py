@@ -1,9 +1,12 @@
-"""Result row/byte caps for SELECT / approve materialization (v0.23).
+"""Result row/byte caps for SELECT / approve materialization (v0.23 / v1.0.1).
 
 Default behavior: **truncate** oversized results and set ``truncated=true``.
 This prevents unbounded MCP/CLI drag-down while keeping partial useful data.
-Operators who prefer hard reject can set ``SQL_WRITE_GATE_RESULT_OVERSIZE=block``
-(reserved; default remains truncate).
+Operators who prefer hard reject can set ``SQL_WRITE_GATE_RESULT_OVERSIZE=block``.
+
+v1.0.1 **hard byte limit**: the final serialized rows payload must be ≤
+``byte_limit``, or the gate raises ``ResultOversizeError`` (block mode /
+unshrinkable row). A single oversized row is **never** returned intact.
 """
 
 from __future__ import annotations
@@ -13,10 +16,7 @@ import os
 from typing import Any
 
 from write_gate.runtime import (
-    DEFAULT_RESULT_BYTE_LIMIT,
     DEFAULT_RESULT_ROW_LIMIT,
-    ENV_RESULT_BYTE_LIMIT,
-    ENV_RESULT_ROW_LIMIT,
     RuntimeSettings,
     load_runtime_settings,
 )
@@ -56,6 +56,64 @@ def oversize_mode() -> str:
     return "truncate"
 
 
+def _shrink_row_to_byte_limit(row: list[Any], byte_limit: int) -> list[Any]:
+    """Return a copy of ``row`` whose serialized size is ≤ ``byte_limit``.
+
+    Prefer trimming the longest string cell; fall back to dropping trailing
+    cells. Raises ``ResultOversizeError`` only if even a minimal placeholder
+    cannot fit (pathological tiny limits).
+    """
+    if byte_limit <= 0:
+        return list(row)
+    out = [_serialize_cell(c) for c in row]
+    if _row_bytes(out) <= byte_limit:
+        return out
+
+    # Iteratively trim longest string cells.
+    for _ in range(64):
+        if _row_bytes(out) <= byte_limit:
+            return out
+        str_idxs = [i for i, c in enumerate(out) if isinstance(c, str) and c]
+        if not str_idxs:
+            break
+        idx = max(str_idxs, key=lambda i: len(out[i]))
+        cur = out[idx]
+        # Binary-search a prefix that fits when substituted.
+        lo, hi = 0, len(cur)
+        best = None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            candidate = list(out)
+            suffix = "…" if mid < len(cur) else ""
+            candidate[idx] = cur[:mid] + suffix
+            if _row_bytes(candidate) <= byte_limit:
+                best = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if best is None:
+            # Drop this cell entirely and continue.
+            out[idx] = ""
+            continue
+        out = best
+        # If we only emptied the cell, loop to trim another.
+        if _row_bytes(out) <= byte_limit:
+            return out
+
+    # Drop trailing cells until it fits.
+    while out and _row_bytes(out) > byte_limit:
+        out = out[:-1]
+    if _row_bytes(out) <= byte_limit:
+        return out
+
+    # Last resort: single empty placeholder list.
+    if _row_bytes([]) <= byte_limit:
+        return []
+    raise ResultOversizeError(
+        f"single row exceeds byte_limit={byte_limit} and cannot be shrunk"
+    )
+
+
 def materialize_result(
     result: Any,
     *,
@@ -66,6 +124,8 @@ def materialize_result(
     """Fetch rows with caps; return serializable payload.
 
     Always includes ``truncated`` (bool) when rows are present.
+    Hard byte limit (v1.0.1): serialized rows stay within ``byte_limit``, or
+    ``ResultOversizeError`` is raised in ``block`` mode / unshrinkable cases.
     """
     if result is None:
         return None
@@ -150,8 +210,12 @@ def _cap_rows(
                 truncated = True
                 break
             if not kept and nb > byte_limit:
-                # Single oversized row: still emit it truncated flag, keep one.
-                kept.append(row)
+                # v1.0.1 hard limit: never emit the oversized row intact.
+                if oversize_mode() == "block":
+                    truncated = True
+                    break
+                shrunk = _shrink_row_to_byte_limit(row, byte_limit)
+                kept.append(shrunk)
                 truncated = True
                 break
             kept.append(row)
@@ -159,6 +223,27 @@ def _cap_rows(
         if len(kept) < len(out):
             truncated = True
         out = kept
+        # Enforce invariant: serialized kept rows ≤ byte_limit.
+        payload = 0
+        enforced: list[list[Any]] = []
+        for row in out:
+            nb = _row_bytes(row)
+            if enforced and payload + nb > byte_limit:
+                truncated = True
+                break
+            if not enforced and nb > byte_limit:
+                truncated = True
+                if oversize_mode() == "block":
+                    break
+                row = _shrink_row_to_byte_limit(row, byte_limit)
+                nb = _row_bytes(row)
+                if nb > byte_limit:
+                    raise ResultOversizeError(
+                        f"result exceeds byte_limit={byte_limit}"
+                    )
+            enforced.append(row)
+            payload += nb
+        out = enforced
     return out, truncated
 
 
