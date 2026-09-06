@@ -15,7 +15,7 @@ Prevent Claude Code, Codex, Cursor and MCP agents from executing unsafe database
 
 Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No API key.**
 
-> **v1.0.0 — pilot-ready on the declared support matrix** (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
+> **v1.0.1 — pilot-ready on the declared support matrix** (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
 > **非生产唯一边界 / 非唯一边界** — **not** the sole production DB security boundary. Combine with least-privilege DB roles, network isolation, and human workflows.
 > **未列语法拒绝** — unsupported / ambiguous SQL → REJECT/BLOCK (`unsupported_sql`, fail closed), never silent ALLOW as read-only.
 
@@ -258,10 +258,10 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | `0` (off) | Statement timeout for check/execute/approve |
+| `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | `0` (off) | Wall-clock statement timeout for check/execute/approve (caller returns at deadline; abandoned worker may still run → indeterminate/`unknown`; no blind retry) |
 | `SQL_WRITE_GATE_RESULT_ROW_LIMIT` | `1000` | Cap SELECT/approve rows (truncate + `truncated=true`) |
-| `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` | `0` (off) | Optional materialized-result byte cap |
-| `SQL_WRITE_GATE_RESULT_OVERSIZE` | `truncate` | `truncate` or `block` when over cap |
+| `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` | `0` (off) | Hard byte cap on materialized rows (payload ≤ limit, or `ResultOversizeError` when `RESULT_OVERSIZE=block`; oversized single row never returned intact) |
+| `SQL_WRITE_GATE_RESULT_OVERSIZE` | `truncate` | `truncate` (shrink/omit to keep ≤ byte/row caps) or `block` (`ResultOversizeError`) |
 | `SQL_WRITE_GATE_AUDIT_MAX_BYTES` | `10 MiB` | Rotate audit / approvals JSONL by size |
 | `SQL_WRITE_GATE_AUDIT_ROTATE_DAILY` | `false` | Also rotate JSONL per UTC day |
 | `SQL_WRITE_GATE_REQUEST_ID` | auto uuid4 | Audit correlation id |
@@ -287,6 +287,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 - [x] Windows support matrix + flock fail-closed (0.20)
 - [x] Release gate: wheel install smoke; publish needs test+build on same tag (0.20)
 - [x] **v1.0.0** limited support-matrix pilot-ready packaging + upgrade/acceptance docs
+- [x] **v1.0.1** prompt timeout return + hard result byte limit
 - [ ] Deferred: distributed / multi-host approval lock
 - [ ] Deferred: MySQL wire-protocol proxy
 - [ ] Deferred: Web UI
