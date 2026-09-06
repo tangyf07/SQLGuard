@@ -183,9 +183,26 @@ def append_audit(
     executed: bool | None = None,
     execution_outcome: str | None = None,
     error_class: str | None = None,
+    request_id: str | None = None,
 ) -> None:
+    """Append one audit JSONL record with correlatable ids (v0.23).
+
+    Fields always present for correlation:
+      - ``request_id`` (generated if missing)
+      - ``decision`` (ALLOW / BLOCK / REQUIRE_APPROVAL)
+      - ``approval_id`` when applicable
+      - ``execution_outcome`` when provided (queued/blocked/executed/failed/unknown/…)
+
+    Failures (execute exceptions, approve unknown) are still audited — callers
+    must pass ``execution_outcome`` / ``error_class`` on those paths.
+    """
+    from write_gate.rotation import maybe_rotate
+    from write_gate.runtime import new_request_id
+
+    rid = new_request_id(request_id)
     record: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": rid,
         "agent": agent,
         "environment": environment,
         "sql": decision.sql,
@@ -207,6 +224,7 @@ def append_audit(
         record["error_class"] = error_class
     dest = Path(path) if path else default_audit_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
+    maybe_rotate(dest)
     with dest.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
