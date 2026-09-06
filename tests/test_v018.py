@@ -324,9 +324,9 @@ def test_audit_redacts_password_in_urls(tmp_path):
     assert rows[0]["execution_outcome"] == "executed"
 
 
-def test_version_is_018():
+def test_version_is_019_after_bump():
     from write_gate import __version__
 
-    assert __version__ == "0.18.0"
+    assert __version__ == "0.19.0"
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.18.0"' in text
+    assert 'version = "0.19.0"' in text
