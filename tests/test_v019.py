@@ -479,6 +479,6 @@ def test_r6_plain_insert_still_allows():
 def test_version_is_022():
     from write_gate import __version__
 
-    assert __version__ == "0.23.0"
+    assert __version__ == "1.0.0"
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.23.0"' in text
+    assert 'version = "1.0.0"' in text
