@@ -10,7 +10,7 @@ No distributed locks / protocol proxy / Web UI / new cloud warehouses in v1.0.
 
 | # | Scenario | How proven |
 |---|----------|------------|
-| A1 | Version is 1.0.0 | `tests/test_v100.py` (`test_version_is_100`); `pyproject.toml` + `__init__.py` |
+| A1 | Version is 1.0.1 | `tests/test_v101.py` (`test_version_is_101`); `pyproject.toml` + `__init__.py` |
 | A2 | Public exports stable | `tests/test_v100.py` (`test_public_exports`); README Stable interfaces |
 | A3 | Decision JSON field list stable | `tests/test_v100.py` (`test_decision_json_fields`); `Decision.to_dict()` |
 | A4 | DuckDB / PG / MySQL / SQLite on matrix | README Declared databases; `test_adapters` / `test_sqlite` / `test_postgres_live` / `test_mysql_live` / `test_mysql` |
