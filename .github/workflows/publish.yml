@@ -73,7 +73,10 @@ jobs:
           /tmp/wheel-venv/bin/pip install -U pip
           /tmp/wheel-venv/bin/pip install dist/*.whl
           /tmp/wheel-venv/bin/python -c "import write_gate; assert write_gate.__version__"
-          /tmp/wheel-venv/bin/sql-write-gate check "DELETE FROM orders" || test $? -eq 2
+          unset POSTGRES_URL MYSQL_URL DATABASE_URL || true
+          SMOKE_DIR=$(mktemp -d)
+          ( cd "$SMOKE_DIR" && /tmp/wheel-venv/bin/sql-write-gate init --force \
+            && /tmp/wheel-venv/bin/sql-write-gate check "DELETE FROM orders" || test $? -eq 2 )
 
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
