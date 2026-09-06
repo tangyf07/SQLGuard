@@ -13,7 +13,7 @@
 | `unsupported_sql` | Multi-statement, MERGE/COPY, nested DML, SELECT INTO, etc. | Rewrite to a single supported statement (see README SQL support matrix) |
 | `blast_radius_exceeded` / `blast_radius_unknown` | UPDATE/DELETE touches too many rows, or COUNT failed | Narrow the WHERE; fix connectivity before retrying writes |
 | `StatementTimeoutError` / `statement_timeout` | Statement exceeded `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | Raise the timeout, optimize SQL, or split work; see **Timeouts** below |
-| Result `truncated=true` | SELECT / approve materialization hit row/byte cap | Raise `SQL_WRITE_GATE_RESULT_ROW_LIMIT` / `RESULT_BYTE_LIMIT`, or page the query |
+| Result `truncated=true` / `ResultOversizeError` | SELECT / approve hit row/byte cap (hard byte limit; single oversized row not returned intact) | Raise limits, page the query, or set `RESULT_OVERSIZE=block` for hard reject |
 
 ## Handling `unknown` (v0.21 three-state)
 
@@ -34,7 +34,11 @@ Rules:
 | `succeeded` | Idempotent; no re-write |
 | `unknown` / `executing` | **Refuse** until resolve or `--allow-unknown-retry` |
 
-Timeouts (v0.23): if the wall-clock / driver timeout fires **after** the statement may have been sent → audit `execution_outcome=unknown` and approval `unknown`. If check-path timeout fires with **no write attempted** → `failed`.
+Timeouts (v0.23 / **v1.0.1**): if the wall-clock / driver timeout fires **after** the statement may have been sent → audit `execution_outcome=unknown` and approval `unknown`. If check-path timeout fires with **no write attempted** → `failed`.
+
+**Wall-clock semantics (v1.0.1):** `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` bounds how long the *caller* waits. On expiry the gate returns promptly (daemon worker + timed join — it does **not** block waiting for pool shutdown). Cancel is best-effort only: an in-flight DB call is not forcibly aborted; the worker may still hold a connection or finish applying SQL. That is why post-send timeouts stay **indeterminate → `unknown`** (0.21). **Never auto-retry.** Prefer native session timeouts (Postgres `statement_timeout` / MySQL `max_execution_time`) when available — the gate sets them best-effort via `apply_session_timeout`.
+
+**Hard byte limit (v1.0.1):** `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` is a hard cap on materialized row payload size. Truncate mode keeps serialized rows ≤ limit (oversized single-row cells are shrunk; never returned intact). `SQL_WRITE_GATE_RESULT_OVERSIZE=block` raises `ResultOversizeError` / clear BLOCK instead of returning partial oversize data.
 
 ## Approval key / token
 
@@ -81,9 +85,9 @@ If live tests fail:
 
 | Env | Meaning | Default |
 |-----|---------|---------|
-| `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | Wall-clock timeout for check/execute/approve SQL | `0` (disabled) |
+| `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | Wall-clock timeout; caller returns at deadline (worker may continue → unknown) | `0` (disabled) |
 | `SQL_WRITE_GATE_RESULT_ROW_LIMIT` | Cap SELECT/approve materialization rows (truncate + `truncated=true`) | `1000` |
-| `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` | Optional byte cap on materialized rows | `0` (off) |
+| `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` | Hard byte cap on materialized rows (≤ limit or `ResultOversizeError`) | `0` (off) |
 | `SQL_WRITE_GATE_RESULT_OVERSIZE` | `truncate` (default) or `block` | `truncate` |
 | `SQL_WRITE_GATE_AUDIT_MAX_BYTES` | Rotate `.logs/audit.jsonl` (and approvals JSONL mirror) by size | `10485760` (10 MiB) |
 | `SQL_WRITE_GATE_AUDIT_ROTATE_DAILY` | Also roll JSONL once per UTC day | `false` |
