@@ -1,6 +1,6 @@
 # Troubleshooting sql-write-gate
 
-**非生产唯一边界** — this gate is an early control, not the sole production security boundary. Combine with least-privilege DB roles and network isolation.
+**非生产唯一边界 / 非唯一边界** — pilot-ready on the declared support matrix; **not** the sole production security boundary. Combine with least-privilege DB roles and network isolation.
 
 ## Common failures
 
