@@ -2,6 +2,18 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [0.20.0] — 2026-09-06
+
+### Real databases & release acceptance
+
+- **Postgres / MySQL live tests**: CI service containers; integration coverage for ALLOWED INSERT/UPDATE persist (new connection recheck), BLOCKED destructive ops leave DB unchanged, constraint failures audited (not silent success), PII approve returns data, blast-radius COUNT + dialect quoting
+- Env: `POSTGRES_URL` / `MYSQL_URL` (preferred) or scheme-matching `DATABASE_URL`; live tests skip when unreachable so local `make test` stays green
+- **R1–R6 permanent regression**: `tests/test_v019.py` + contract `tests/test_regression_r1_r6.py` — each item asserts dangerous BLOCK/REJECT **and** safe ALLOW/APPROVAL (not over-block); v0.17 / v0.18 suites remain green
+- **Windows**: README support matrix; SQLite drive-letter paths; if `fcntl.flock` unavailable, approval mutations **fail closed** (`ApprovalError`) — never silently degrade concurrent approve
+- **Release gate**: CI builds wheel and smokes installed package; `publish.yml` runs test+wheel gate on the tag first (`needs: release-gate`), then publishes; `scripts/check_version_tag.py` asserts package version matches tag
+- **Docs**: slim README (behavior / install / matrix / boundaries); history stays in CHANGELOG; backlog drops outdated “PyPI pending”; distributed lock / protocol proxy / Web UI marked **deferred**
+- Keep **非生产唯一边界**. No distributed locks, MySQL protocol proxy, or Web UI in this release.
+
 ## [0.19.0] — 2026-09-06
 
 ### Security / hardening
