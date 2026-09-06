@@ -476,9 +476,9 @@ def test_r6_plain_insert_still_allows():
     assert ev.rule_id == "ok"
 
 
-def test_version_is_021():
+def test_version_is_022():
     from write_gate import __version__
 
-    assert __version__ == "0.21.0"
+    assert __version__ == "0.22.0"
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.21.0"' in text
+    assert 'version = "0.22.0"' in text
