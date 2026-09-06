@@ -1,4 +1,4 @@
-"""v0.19.0 acceptance: approve race, redacted reconnect, CLI rows, audit fail, freshness, nested DML."""
+"""v0.19/v0.20 R1–R6 regression: dangerous BLOCK + safe ALLOW/APPROVAL (not over-block)."""
 
 from __future__ import annotations
 
@@ -397,9 +397,88 @@ def test_r6_select_dm_cte_still_rejected():
     assert ev.rule_id == "unsupported_sql"
 
 
-def test_version_is_019():
+
+
+# --- Safe-path counterparts (must not over-block) -----------------------------
+
+
+def test_r1_safe_single_approve_executes_once(tmp_path):
+    db_path = _seed(tmp_path)
+    approvals = tmp_path / "approvals.jsonl"
+    with WriteGate(
+        db_path=db_path,
+        policy=production_policy(),
+        audit_path=tmp_path / "audit.jsonl",
+        approvals_path=approvals,
+        agent="test",
+    ) as gate:
+        decision, _ = gate.execute("SELECT email FROM orders LIMIT 1")
+        assert decision.action == ACTION_APPROVAL
+        d, rows = gate.approve(decision.approval_id)
+        assert d.action == ACTION_ALLOW
+        assert rows is not None
+
+
+def test_r2_plain_url_connect_not_overblocked(tmp_path):
+    """Non-redacted DuckDB path still connects; redacted refusal is the only gate."""
+    db_path = _seed(tmp_path)
+    gate = WriteGate(
+        db_path=db_path,
+        policy=demo_policy(),
+        audit_path=tmp_path / "audit.jsonl",
+        approvals_path=tmp_path / "approvals.jsonl",
+    )
+    conn = gate._connect()
+    assert conn is not None
+    gate.close()
+
+
+def test_r4_successful_execute_audited_as_executed(tmp_path):
+    db_path = _seed(tmp_path)
+    audit = tmp_path / "audit.jsonl"
+    with WriteGate(
+        db_path=db_path,
+        policy=demo_policy(),
+        audit_path=audit,
+        approvals_path=tmp_path / "approvals.jsonl",
+        agent="test",
+    ) as gate:
+        ev, result = gate.execute(
+            "INSERT INTO orders (order_id, user_id, amount, dt, status) "
+            "VALUES (88, 1, 1.0, '2026-09-01', 'paid')"
+        )
+        assert ev.action == ACTION_ALLOW
+        assert result is not None
+    rows = read_audit(audit, limit=20)
+    ok = [r for r in rows if r.get("execution_outcome") == "executed"]
+    assert ok
+    assert ok[-1]["executed"] is True
+
+
+def test_r5_safe_fresh_equality_allows():
+    cat = load_catalog()
+    ev = evaluate(
+        "UPDATE orders SET status = 'x' WHERE dt = '2026-09-01'",
+        cat,
+        policy=demo_policy(),
+    )
+    assert ev.rule_id != "expired_partition"
+    assert ev.action == "ALLOW"
+
+
+def test_r6_plain_insert_still_allows():
+    sql = (
+        "INSERT INTO orders (order_id, user_id, amount, dt, status) "
+        "VALUES (1, 1, 1.0, '2026-09-01', 'paid')"
+    )
+    ev = evaluate(sql, load_catalog(), policy=demo_policy(), dialect="postgres")
+    assert ev.action == "ALLOW"
+    assert ev.rule_id == "ok"
+
+
+def test_version_is_020():
     from write_gate import __version__
 
-    assert __version__ == "0.19.0"
+    assert __version__ == "0.20.0"
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.19.0"' in text
+    assert 'version = "0.20.0"' in text
