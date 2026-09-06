@@ -384,8 +384,12 @@ def _load_jsonl_legacy(path: Path) -> dict[str, dict[str, Any]]:
 
 def _export_jsonl(path: Path, records: list[ApprovalRecord]) -> None:
     """Rewrite JSONL mirror for audit/compat (source of truth remains SQLite)."""
+    from write_gate.rotation import maybe_rotate
+
     jpath = jsonl_path_for(path)
     jpath.parent.mkdir(parents=True, exist_ok=True)
+    # Rotate oversized / daily mirror before rewrite; SQLite SoT untouched.
+    maybe_rotate(jpath)
     tmp = jpath.with_suffix(jpath.suffix + ".tmp")
     body = "".join(
         json.dumps(rec.to_dict(), ensure_ascii=False) + "\n" for rec in records
@@ -462,6 +466,12 @@ def classify_execute_error(exc: BaseException) -> str:
     unknown = timeout/disconnect/indeterminate after the attempt may have
     reached the DB.
     """
+    # v0.23 StatementTimeoutError: honor explicit indeterminate flag.
+    indeterminate = getattr(exc, "indeterminate", None)
+    if indeterminate is False:
+        return STATUS_FAILED
+    if indeterminate is True:
+        return STATUS_UNKNOWN
     name = type(exc).__name__.lower()
     msg = str(exc).lower()
     indeterminate_tokens = (
