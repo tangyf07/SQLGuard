@@ -13,13 +13,18 @@ from write_gate.adapters.base import (
     resolve_target,
 )
 from write_gate.approvals import (
+    STATUS_EXECUTING,
+    STATUS_UNKNOWN,
     ApprovalError,
     claim_for_execute,
+    classify_execute_error,
     enqueue_approval,
     get_approval,
-    mark_approved,
+    is_terminal_success,
     mark_failed,
     mark_rejected,
+    mark_succeeded,
+    mark_unknown,
     release_claim,
 )
 from write_gate.audit import (
@@ -228,18 +233,28 @@ class WriteGate:
         )
         return decision, result
 
-    def approve(self, approval_id: str) -> tuple[Decision, Any]:
-        """Atomically claim pending→executing, re-run guards, execute if ALLOW.
+    def approve(
+        self,
+        approval_id: str,
+        *,
+        allow_unknown_retry: bool = False,
+    ) -> tuple[Decision, Any]:
+        """Atomically claim → executing, re-run guards, execute if ALLOW.
+
+        Outcomes after attempt:
+          succeeded — DB write/query completed; status ``succeeded``
+          failed — known not executed / rolled back before commit uncertainty
+          unknown — timeout/disconnect/mark failure; NEVER auto-retried
 
         Clears environment 'approval' rules and PII SELECT approval for this
         queued statement. Destructive / PII-write / freshness / blast BLOCK
-        still apply. Only the claimer executes; a second approve sees
-        not-pending and does not write. Idempotent for already-approved ids.
+        still apply. Only the claimer executes; a second approve on
+        succeeded/unknown does not write (idempotent / explicit retry only).
         """
         existing = get_approval(approval_id, path=self.approvals_path)
         if existing is None:
             raise ApprovalError(f"approval not found: {approval_id}")
-        if existing.status == "approved":
+        if is_terminal_success(existing.status):
             decision = Decision(
                 action=ACTION_ALLOW,
                 risk="low",
@@ -259,14 +274,30 @@ class WriteGate:
                 execution_outcome="already_approved",
             )
             return decision, None
+        if existing.status == STATUS_UNKNOWN and not allow_unknown_retry:
+            raise ApprovalError(
+                f"approval outcome unknown: {existing.id} — verify the target DB, "
+                "then `resolve --as succeeded|failed|rejected` or "
+                "`approve --allow-unknown-retry` (never auto-retried)"
+            )
+        if existing.status == STATUS_EXECUTING and not allow_unknown_retry:
+            raise ApprovalError(
+                f"approval still executing: {existing.id} — wait for TTL→unknown, "
+                "use `approve --force-unknown-check`, then resolve or "
+                "`--allow-unknown-retry` (never silently re-claimed)"
+            )
 
-        # Atomic claim under flock — closes the approve race window.
+        # Atomic claim under flock + SQLite — closes the approve race window.
         try:
-            rec = claim_for_execute(approval_id, path=self.approvals_path)
+            rec = claim_for_execute(
+                approval_id,
+                path=self.approvals_path,
+                allow_unknown_retry=allow_unknown_retry,
+            )
         except ApprovalError:
-            # Re-read: may have become approved between get and claim.
+            # Re-read: may have become succeeded between get and claim.
             again = get_approval(approval_id, path=self.approvals_path)
-            if again is not None and again.status == "approved":
+            if again is not None and is_terminal_success(again.status):
                 decision = Decision(
                     action=ACTION_ALLOW,
                     risk="low",
@@ -313,15 +344,50 @@ class WriteGate:
         try:
             result = self._execute_user_sql(rec.sql)
         except Exception as exc:
-            mark_failed(rec.id, path=self.approvals_path)
+            outcome = classify_execute_error(exc)
+            if outcome == STATUS_UNKNOWN:
+                mark_unknown(
+                    rec.id,
+                    path=self.approvals_path,
+                    error_class=type(exc).__name__,
+                    outcome_note="execute raised indeterminate error",
+                )
+                exec_outcome = "unknown"
+            else:
+                mark_failed(
+                    rec.id,
+                    path=self.approvals_path,
+                    error_class=type(exc).__name__,
+                    outcome_note="execute raised known failure",
+                )
+                exec_outcome = "failed"
             self._audit(
                 decision,
                 executed=False,
-                execution_outcome="failed",
+                execution_outcome=exec_outcome,
                 error_class=type(exc).__name__,
             )
             raise
-        mark_approved(rec.id, path=self.approvals_path)
+        try:
+            mark_succeeded(rec.id, path=self.approvals_path)
+        except Exception as mark_exc:
+            # Write may have reached the DB; do not leave executing for silent reclaim.
+            try:
+                mark_unknown(
+                    rec.id,
+                    path=self.approvals_path,
+                    error_class=type(mark_exc).__name__,
+                    outcome_note="post-exec mark_succeeded failed → unknown",
+                )
+            except ApprovalError:
+                pass
+            self._audit(
+                decision,
+                executed=True,
+                execution_outcome="unknown",
+                error_class=type(mark_exc).__name__,
+            )
+            raise
         self._audit(
             decision,
             executed=True,
