@@ -104,6 +104,8 @@ def test_resolve_db_path_postgres_url():
 
 
 def test_resolve_env_database_url(monkeypatch):
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("MYSQL_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", PG_URL)
     backend, target = resolve_target(environ=os.environ)
     assert backend == BACKEND_POSTGRES
@@ -149,6 +151,8 @@ def test_writegate_database_url_alias(tmp_path):
 
 
 def test_writegate_env_database_url(monkeypatch, tmp_path):
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("MYSQL_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", PG_URL)
     gate = WriteGate(policy=production_policy(), audit_path=tmp_path / "audit.jsonl")
     assert gate.backend == BACKEND_POSTGRES
