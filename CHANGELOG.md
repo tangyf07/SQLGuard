@@ -2,6 +2,21 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [0.22.0] — 2026-09-06
+
+### Security boundary & SQL coverage
+
+- **Deployment model**: DB credentials, `policy.yaml`, and approval authority live on the **trusted executor**. Agent-facing `check` / `hook` / MCP `query_sql`/`write_sql` may enqueue REQUIRE_APPROVAL but cannot `approve` / `resolve` / `reject` without trust, and have no API to rewrite policy.
+- **Approval privilege separation**: trusted executor keeps a local key file (default `.logs/approval.key`, or `SQL_WRITE_GATE_APPROVAL_KEY_FILE`); caller must set `SQL_WRITE_GATE_APPROVAL_TOKEN` to match. Missing key, missing token, or wrong token → clear error (CLI exit non-zero). Correct token → existing 0.21 approve/resolve/reject behavior.
+- **Target binding harden**: approve reconnect cannot swap to an arbitrary current `DATABASE_URL` when `database_config_id` differs. Queue against DB A then change env to DB B → approve **fail closed** (no write to B). Same-target trusted resolve still works.
+- **SQL support matrix** (README): supported vs explicitly rejected dialects/features; dangerous/ambiguous SQL outside the matrix → `unsupported_sql` BLOCK (multi-statement, MERGE/COPY/REPLACE, nested DML / SELECT INTO, etc.). Variant regressions beyond R6.
+- Keep **非生产唯一边界**. No distributed locks / Web UI / MySQL protocol proxy.
+
+### Docs / tests
+
+- README: trusted-executor deployment, approval token, SQL support matrix; backlog post-0.22
+- Tests: `tests/test_v022.py` (trust no/wrong/right key, target swap fail-closed, SQL variants); v0.17–v0.21 suites stay green
+
 ## [0.21.0] — 2026-09-06
 
 ### Single-host approval reliability
