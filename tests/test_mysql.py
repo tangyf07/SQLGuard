@@ -89,6 +89,8 @@ def test_resolve_target_mysql_url():
 
 
 def test_resolve_env_mysql(monkeypatch):
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.delenv("MYSQL_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", MYSQL_URL)
     backend, target = resolve_target(environ=os.environ)
     assert backend == BACKEND_MYSQL
