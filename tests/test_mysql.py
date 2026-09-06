@@ -250,3 +250,21 @@ def test_missing_driver_install_hint(monkeypatch):
 
         mysql_mod._connect_raw(MYSQL_URL)
     assert "sql-write-gate[mysql]" in str(ei.value)
+
+
+def test_resolve_env_postgres_url_preferred(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("POSTGRES_URL", "postgresql://gate@localhost/db")
+    monkeypatch.setenv("MYSQL_URL", "mysql://gate@localhost/db")
+    backend, target = resolve_target(environ=os.environ)
+    assert backend == BACKEND_POSTGRES
+    assert target.startswith("postgresql://")
+
+
+def test_resolve_env_mysql_url(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("POSTGRES_URL", raising=False)
+    monkeypatch.setenv("MYSQL_URL", MYSQL_URL)
+    backend, target = resolve_target(environ=os.environ)
+    assert backend == BACKEND_MYSQL
+    assert target == MYSQL_URL
