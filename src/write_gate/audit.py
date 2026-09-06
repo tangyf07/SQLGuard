@@ -29,29 +29,148 @@ _URL_PASSWORD = re.compile(
     r"@(?P<host>[^/@?#\s]+)(?P<rest>.*)$"
 )
 
+_QUERY_PASSWORD = re.compile(
+    r"(?i)([?&](?:password|passwd|pwd|pass|secret)=)([^&#\s]*)"
+)
+
+
+
 
 def redact_database_url(value: object) -> str | None:
-    """Redact password in DB URLs for audit / approvals logs."""
+    """Redact password in DB URLs for audit / approvals logs.
+
+    Covers ``user:password@host`` and query-string forms such as
+    ``?password=`` / ``&passwd=`` / ``?pwd=``.
+    """
     if value is None:
         return None
     raw = str(value)
-    if not raw or "://" not in raw or "@" not in raw:
+    if not raw:
         return raw
-    m = _URL_PASSWORD.match(raw)
-    if m:
-        return f"{m.group('head')}:***@{m.group('host')}{m.group('rest')}"
+    out = raw
+    if "://" in out and "@" in out:
+        m = _URL_PASSWORD.match(out)
+        if m:
+            out = f"{m.group('head')}:***@{m.group('host')}{m.group('rest')}"
+        else:
+            try:
+                parts = urlsplit(out)
+            except ValueError:
+                parts = None
+            if parts is not None and parts.password is not None:
+                host = parts.hostname or ""
+                if parts.port:
+                    host = f"{host}:{parts.port}"
+                user = parts.username or ""
+                netloc = f"{user}:***@{host}" if user else f"***@{host}"
+                out = urlunsplit(
+                    (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
+                )
+    # Query-string secrets (e.g. jdbc-ish or gateway DSNs).
+    out = _QUERY_PASSWORD.sub(r"\1***", out)
+    return out
+
+
+
+_REDACTED_SECRETS = frozenset({"***", "****"})
+
+
+def looks_redacted_secret(value: object | None) -> bool:
+    """True when a password/token is a redaction placeholder, not a real secret."""
+    if value is None:
+        return False
+    return str(value) in _REDACTED_SECRETS
+
+
+def url_has_redacted_password(value: object | None) -> bool:
+    """True if URL embeds ``:***@`` or a redacted ``?password=`` query value."""
+    if value is None:
+        return False
+    raw = str(value)
+    if ":***@" in raw:
+        return True
+    if re.search(r"(?i)[?&](?:password|passwd|pwd|pass|secret)=\*\*\*", raw):
+        return True
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return False
+    return looks_redacted_secret(parts.password)
+
+
+def database_config_id(value: object | None) -> str | None:
+    """Stable fingerprint of a DB target without credentials (for reconnect binding)."""
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        return f"file:{raw}"
     try:
         parts = urlsplit(raw)
     except ValueError:
         return raw
-    if parts.password is None:
-        return raw
-    host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
+    scheme = (parts.scheme or "").lower()
     user = parts.username or ""
-    netloc = f"{user}:***@{host}" if user else f"***@{host}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    host = parts.hostname or ""
+    port = parts.port
+    path = parts.path or ""
+    authority = host
+    if port:
+        authority = f"{host}:{port}"
+    if user:
+        authority = f"{user}@{authority}"
+    return f"{scheme}://{authority}{path}"
+
+
+def same_database_target(left: object | None, right: object | None) -> bool:
+    """Whether two URLs/paths refer to the same DB target (ignoring passwords)."""
+    a = database_config_id(left)
+    b = database_config_id(right)
+    if not a or not b:
+        return False
+    return a == b
+
+
+def resolve_trusted_database_url(
+    stored: object | None,
+    *,
+    environ: dict[str, str] | None = None,
+    preferred: str | None = None,
+    config_id: str | None = None,
+) -> str | None:
+    """Resolve a reconnect URL; never treat ``***`` as a password.
+
+    When ``stored`` is redacted, bind trusted credentials from ``preferred`` or
+    ``DATABASE_URL`` only if they match the same DB target fingerprint.
+    """
+    import os
+
+    env = dict(os.environ if environ is None else environ)
+    raw = None if stored is None else str(stored)
+    if raw and not url_has_redacted_password(raw):
+        return raw
+
+    target_id = config_id or database_config_id(raw)
+    candidates: list[str] = []
+    for c in (preferred, env.get("DATABASE_URL"), env.get("SQL_WRITE_GATE_DATABASE_URL")):
+        if c:
+            candidates.append(str(c))
+    for cand in candidates:
+        if url_has_redacted_password(cand):
+            continue
+        try:
+            pw = urlsplit(cand).password if "://" in cand else None
+        except ValueError:
+            pw = None
+        if looks_redacted_secret(pw):
+            continue
+        cand_id = database_config_id(cand)
+        if target_id and cand_id != target_id:
+            continue
+        return cand
+    return None
 
 
 def append_audit(
@@ -63,6 +182,7 @@ def append_audit(
     database: str | None = None,
     executed: bool | None = None,
     execution_outcome: str | None = None,
+    error_class: str | None = None,
 ) -> None:
     record: dict[str, Any] = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -83,10 +203,13 @@ def append_audit(
         record["executed"] = executed
     if execution_outcome is not None:
         record["execution_outcome"] = execution_outcome
+    if error_class is not None:
+        record["error_class"] = error_class
     dest = Path(path) if path else default_audit_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
     with dest.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
 
 
 def read_audit(path: Path | None = None, limit: int = 20) -> list[dict[str, Any]]:
