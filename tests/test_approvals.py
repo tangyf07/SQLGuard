@@ -124,7 +124,7 @@ def test_approve_id_writes_row(tmp_path, capsys):
     assert "ALLOWED" in text
     rec = get_approval(aid, path=approvals)
     assert rec is not None
-    assert rec.status == "approved"
+    assert rec.status == "succeeded"
     n = _count(db_path, "SELECT COUNT(*) FROM orders WHERE order_id = 900001")
     assert n == 1
 
@@ -238,7 +238,7 @@ def test_approve_clears_pii_select_and_executes(tmp_path, capsys):
     assert "ALLOWED" in text
     rec = get_approval(aid, path=approvals)
     assert rec is not None
-    assert rec.status == "approved"
+    assert rec.status == "succeeded"
 
 
 def test_approve_does_not_clear_destructive_block(tmp_path):
