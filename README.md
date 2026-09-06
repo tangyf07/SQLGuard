@@ -64,7 +64,7 @@ sql-write-gate init              # scaffold policy.yaml + catalog.json
 - Approval state machine (SQLite source of truth + JSONL mirror): `pending`→`executing`→`succeeded`|`failed`|`unknown` (+ `rejected`)
 - Atomic claim under `fcntl.flock` + SQLite `BEGIN IMMEDIATE` (single-host; fail closed without flock)
 - Three-state execute outcomes; **`unknown`/`executing` never auto-retried** — use `resolve` or `approve --allow-unknown-retry` after manual DB verify
-- JSONL audit (redacts URL passwords; records execute failures / unknown)
+- JSONL audit (redacts URL passwords; records execute failures / unknown; `request_id` + `approval_id` + `execution_outcome` correlation; rotatable)
 - Adapters: **DuckDB** (default), **PostgreSQL**, **MySQL**, **SQLite**
 
 ## Platform support matrix
@@ -183,10 +183,28 @@ Anything dangerous or ambiguous **not** on the supported side → `unsupported_s
 - Not a distributed approval lock, MySQL wire-protocol proxy, or Web UI
 - Not an enterprise DQ / lineage / ChatBI / multi-tenant platform
 
-See [CHANGELOG.md](CHANGELOG.md) for version history (v0.1 → v0.22).
+See [docs/troubleshooting.md](docs/troubleshooting.md) for common failures, `unknown` recovery, approval token, credentials, and real-DB CI.
 
-## Backlog (post-0.22)
+See [CHANGELOG.md](CHANGELOG.md) for version history (v0.1 → v0.23).
 
+## Ops knobs (v0.23)
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | `0` (off) | Statement timeout for check/execute/approve |
+| `SQL_WRITE_GATE_RESULT_ROW_LIMIT` | `1000` | Cap SELECT/approve rows (truncate + `truncated=true`) |
+| `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` | `0` (off) | Optional materialized-result byte cap |
+| `SQL_WRITE_GATE_AUDIT_MAX_BYTES` | `10 MiB` | Rotate audit / approvals JSONL by size |
+| `SQL_WRITE_GATE_AUDIT_ROTATE_DAILY` | `false` | Also rotate JSONL per UTC day |
+| `SQL_WRITE_GATE_REQUEST_ID` | auto uuid4 | Audit correlation id |
+
+## Backlog (post-0.23)
+
+- [x] Statement timeout + failed/unknown mapping (0.23)
+- [x] Result row/byte caps with truncate flag (0.23)
+- [x] Audit `request_id` / correlation fields (0.23)
+- [x] JSONL audit / approvals mirror rotation (0.23)
+- [x] Troubleshooting guide (0.23)
 - [x] Trusted-executor approval token + key file privilege separation (0.22)
 - [x] Approve target fingerprint fail-closed on DATABASE_URL swap (0.22)
 - [x] SQL support matrix + unsupported variant regressions (0.22)
