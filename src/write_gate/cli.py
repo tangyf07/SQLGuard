@@ -1,4 +1,4 @@
-"""CLI: sql-write-gate check|exec|audit|hook|mcp|proxy|approve|reject|pending|init."""
+"""CLI: sql-write-gate check|exec|audit|hook|mcp|proxy|approve|reject|resolve|pending|init."""
 
 from __future__ import annotations
 
@@ -8,10 +8,17 @@ import sys
 from pathlib import Path
 
 from write_gate.approvals import (
+    STATUS_FAILED,
+    STATUS_PENDING,
+    STATUS_SUCCEEDED,
+    STATUS_UNKNOWN,
     ApprovalError,
+    force_unknown_check,
     get_approval,
+    is_terminal_success,
     list_pending,
     mark_rejected,
+    resolve_approval,
 )
 from write_gate.audit import (
     format_audit_table,
@@ -168,7 +175,7 @@ def _add_shared(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     parser.add_argument(
         "--approvals",
-        help="Path to approvals jsonl (default: .logs/approvals.jsonl)",
+        help="Approvals path (JSONL mirror; SQLite source of truth is sibling .sqlite; default: .logs/approvals.jsonl)",
     )
 
 
@@ -241,23 +248,61 @@ def build_parser() -> argparse.ArgumentParser:
     queue = argparse.ArgumentParser(add_help=False)
     queue.add_argument(
         "--approvals",
-        help="Path to approvals jsonl (default: .logs/approvals.jsonl)",
+        help="Approvals path (JSONL mirror; SQLite source of truth is sibling .sqlite; default: .logs/approvals.jsonl)",
     )
     queue.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
     approve_p = sub.add_parser(
         "approve",
-        help="Execute a pending approval id (re-runs guards; env approval only is cleared)",
+        help="Execute a pending/failed approval id (re-runs guards; env approval only is cleared)",
         parents=[queue],
     )
-    approve_p.add_argument("approval_id", help="Pending approval id")
+    approve_p.add_argument("approval_id", help="Approval id")
+    approve_p.add_argument(
+        "--allow-unknown-retry",
+        action="store_true",
+        help=(
+            "Explicitly reclaim an unknown outcome and re-execute AFTER manual DB "
+            "verify (never automatic; documents risk of double-write)"
+        ),
+    )
+    approve_p.add_argument(
+        "--force-unknown-check",
+        action="store_true",
+        help=(
+            "Run crash-recovery TTL check and print status without executing "
+            "(stuck executing → unknown when TTL expires)"
+        ),
+    )
 
     reject_p = sub.add_parser(
         "reject",
-        help="Reject a pending approval id without writing",
+        help="Reject a pending/failed/unknown approval id without writing",
         parents=[queue],
     )
-    reject_p.add_argument("approval_id", help="Pending approval id")
+    reject_p.add_argument("approval_id", help="Approval id")
+
+    resolve_p = sub.add_parser(
+        "resolve",
+        help=(
+            "Mark unknown/failed after manual DB verify without re-executing "
+            "(succeeded|failed|rejected)"
+        ),
+        parents=[queue],
+    )
+    resolve_p.add_argument("approval_id", help="Approval id")
+    resolve_p.add_argument(
+        "--as",
+        dest="resolve_as",
+        required=True,
+        choices=["succeeded", "failed", "rejected", "confirm-succeeded"],
+        help="Human-resolved terminal status (confirm-succeeded aliases succeeded)",
+    )
+    resolve_p.add_argument(
+        "--note",
+        default=None,
+        help="Optional note recorded on the approval (e.g. how DB was verified)",
+    )
 
     sub.add_parser(
         "pending",
@@ -350,17 +395,60 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
 
 def _cmd_approve(args: argparse.Namespace) -> int:
     path = _approvals_path(args)
+    if bool(getattr(args, "force_unknown_check", False)):
+        try:
+            rec = force_unknown_check(args.approval_id, path=path)
+        except ApprovalError as exc:
+            sys.stderr.write(str(exc) + "\n")
+            return 1
+        payload = {
+            "id": rec.id,
+            "status": rec.status,
+            "outcome_note": rec.outcome_note,
+            "error_class": rec.error_class,
+            "executing_at": rec.executing_at,
+            "hint": (
+                "If status is unknown: verify target DB, then "
+                "`resolve --as succeeded|failed|rejected` or "
+                "`approve --allow-unknown-retry` (never automatic)."
+            ),
+        }
+        if args.json:
+            json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
+            sys.stdout.write("\n")
+        else:
+            sys.stdout.write(
+                f"STATUS {rec.status}\n"
+                f"Approval id: {rec.id}\n"
+                f"Note: {rec.outcome_note or '-'}\n"
+                f"{payload['hint']}\n"
+            )
+        return 0
+
     rec = get_approval(args.approval_id, path=path)
     if rec is None:
         sys.stderr.write(f"approval not found or not pending: {args.approval_id}\n")
         return 1
-    if rec.status not in {"pending", "approved", "failed"}:
-        sys.stderr.write(f"approval not found or not pending: {args.approval_id}\n")
+    allow_retry = bool(getattr(args, "allow_unknown_retry", False))
+    allowed = {STATUS_PENDING, STATUS_FAILED, STATUS_SUCCEEDED, "approved"}
+    if allow_retry:
+        allowed.add(STATUS_UNKNOWN)
+    if is_terminal_success(rec.status):
+        pass  # idempotent path inside gate.approve
+    elif rec.status not in allowed:
+        sys.stderr.write(
+            f"approval not claimable (status={rec.status}): {args.approval_id}\n"
+            "Use `approve --force-unknown-check`, `resolve --as …`, or "
+            "`approve --allow-unknown-retry` after manual verify.\n"
+        )
         return 1
     materialized = None
     with _gate_from_record(rec, approvals_path=path, agent="approve") as gate:
         try:
-            decision, result = gate.approve(rec.id)
+            decision, result = gate.approve(
+                rec.id,
+                allow_unknown_retry=allow_retry,
+            )
             # Materialize rows before closing the connection (R3).
             materialized = _materialize_result(result)
         except ApprovalError as exc:
@@ -368,10 +456,11 @@ def _cmd_approve(args: argparse.Namespace) -> int:
             return 1
     return _print_decision(decision, as_json=bool(args.json), result=materialized)
 
+
 def _cmd_reject(args: argparse.Namespace) -> int:
     path = _approvals_path(args)
     rec = get_approval(args.approval_id, path=path)
-    if rec is None or rec.status not in {"pending", "failed"}:
+    if rec is None or rec.status not in {STATUS_PENDING, STATUS_FAILED, STATUS_UNKNOWN}:
         sys.stderr.write(f"approval not found or not pending: {args.approval_id}\n")
         return 1
     try:
@@ -384,6 +473,28 @@ def _cmd_reject(args: argparse.Namespace) -> int:
         sys.stdout.write("\n")
     else:
         sys.stdout.write(f"REJECTED\nApproval id: {rec.id}\n")
+    return 0
+
+
+def _cmd_resolve(args: argparse.Namespace) -> int:
+    path = _approvals_path(args)
+    try:
+        rec = resolve_approval(
+            args.approval_id,
+            as_status=str(args.resolve_as),
+            path=path,
+            outcome_note=getattr(args, "note", None),
+        )
+    except ApprovalError as exc:
+        sys.stderr.write(str(exc) + "\n")
+        return 1
+    if args.json:
+        json.dump(rec.to_dict(), sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+    else:
+        sys.stdout.write(
+            f"RESOLVED\nApproval id: {rec.id}\nStatus: {rec.status}\n"
+        )
     return 0
 
 
@@ -437,6 +548,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "reject":
         return _cmd_reject(args)
+
+    if args.command == "resolve":
+        return _cmd_resolve(args)
 
     if args.command == "pending":
         return _cmd_pending(args)
