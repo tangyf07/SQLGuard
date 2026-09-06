@@ -7,7 +7,7 @@ Use this as the evidence pack before a controlled pilot. Check boxes when verifi
 
 ## Version & docs
 
-- [ ] `write_gate.__version__ == "1.0.0"` and `pyproject.toml` version `1.0.0`
+- [ ] `write_gate.__version__ == "1.0.1"` and `pyproject.toml` version `1.0.1`
 - [ ] README states pilot-ready on declared matrix + **非生产唯一边界 / 非唯一边界**
 - [ ] No “early prototype / candidate” sole-boundary wording on the front page
 - [ ] Links present: compatibility / upgrade / this checklist / v1-acceptance / troubleshooting
@@ -27,6 +27,7 @@ Use this as the evidence pack before a controlled pilot. Check boxes when verifi
 - [ ] **v0.21** three-state / SQLite store / no unknown auto-retry: `tests/test_v021.py`
 - [ ] **v0.22** trust + target bind + SQL matrix: `tests/test_v022.py`
 - [ ] **v0.23** timeout / result caps / audit correlation / rotation: `tests/test_v023.py`
+- [ ] **v1.0.1** prompt timeout + hard byte limit: `tests/test_v101.py`
 - [ ] **v1.0** contracts: `tests/test_v100.py`
 
 ## Trust / approval key
