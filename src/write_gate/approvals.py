@@ -22,16 +22,22 @@ STATUS_FAILED = "failed"
 
 _ID_LEN = 12
 
-# Best-effort concurrency: flock around load+atomic replace. Concurrent writers
-# on the same host serialize; cross-host / NFS locking is not guaranteed.
+# Single-host concurrency: flock around load+atomic replace.
+# Cross-host / NFS locking is not supported (not a distributed lock).
+# If fcntl.flock is unavailable (e.g. Windows), approval mutations fail closed
+# rather than silently degrading concurrent approve safety.
 _LOCK_NOTE = (
-    "approvals.jsonl uses flock + atomic replace for best-effort single-host "
-    "concurrency; not a distributed lock"
+    "approvals.jsonl uses flock + atomic replace for single-host concurrency; "
+    "not a distributed lock"
+)
+_FLOCK_REQUIRED_MSG = (
+    "concurrent approval requires fcntl.flock (Unix); not available on this "
+    "platform — refusing rather than silently degrading (see README support matrix)"
 )
 
 
 class ApprovalError(Exception):
-    """Missing, not pending, or invalid approval record."""
+    """Missing, not pending, invalid approval, or flock unavailable."""
 
 
 @dataclass
@@ -102,31 +108,42 @@ def _lock_path(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".lock")
 
 
+def _import_fcntl():
+    """Return the fcntl module or raise ApprovalError (fail closed)."""
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise ApprovalError(_FLOCK_REQUIRED_MSG) from exc
+    return fcntl
+
+
 @contextmanager
 def _file_lock(path: Path) -> Iterator[None]:
-    """Exclusive flock for the critical section (best-effort concurrency)."""
+    """Exclusive flock for the critical section. Fail closed if unavailable."""
+    fcntl = _import_fcntl()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = _lock_path(path)
     fh = lock_file.open("a+", encoding="utf-8")
+    locked = False
     try:
         try:
-            import fcntl
-
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            # Windows / unsupported — proceed without lock (documented best-effort).
-            pass
+            locked = True
+        except OSError as exc:
+            raise ApprovalError(
+                "fcntl.flock failed; refusing concurrent approval rather than "
+                "silently degrading"
+            ) from exc
         if not lock_file.read_text(encoding="utf-8").strip():
             fh.write(_LOCK_NOTE + "\n")
             fh.flush()
         yield
     finally:
-        try:
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        except (ImportError, OSError, ValueError):
-            pass
+        if locked:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except (OSError, ValueError):
+                pass
         fh.close()
 
 
