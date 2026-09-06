@@ -73,7 +73,11 @@ jobs:
           /tmp/wheel-venv/bin/pip install dist/*.whl
           /tmp/wheel-venv/bin/pip install "pytest>=8" pyyaml "duckdb>=1.1" "sqlglot>=25" "psycopg[binary]>=3.1" pymysql
           /tmp/wheel-venv/bin/python -c "import write_gate; print('installed', write_gate.__version__)"
-          /tmp/wheel-venv/bin/sql-write-gate check "DELETE FROM orders" || test $? -eq 2
+          # Installed wheel has no checkout seed; init cwd policy/catalog. Clear service URLs so smoke uses DuckDB.
+          unset POSTGRES_URL MYSQL_URL DATABASE_URL || true
+          SMOKE_DIR=$(mktemp -d)
+          ( cd "$SMOKE_DIR" && /tmp/wheel-venv/bin/sql-write-gate init --force \
+            && /tmp/wheel-venv/bin/sql-write-gate check "DELETE FROM orders" || test $? -eq 2 )
           # Key tests against installed wheel (do not put checkout src/ on path)
           /tmp/wheel-venv/bin/pytest -q \
             --override-ini="pythonpath=" \
