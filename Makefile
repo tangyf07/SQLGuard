@@ -7,7 +7,7 @@ PY := $(BIN)/python
 .PHONY: install seed test demo clean
 
 install: $(VENV)/pyvenv.cfg
-	$(PIP) install -e ".[dev]"
+	$(PIP) install -e ".[dev,postgres,mysql]"
 
 $(VENV)/pyvenv.cfg:
 	$(PYTHON) -m venv $(VENV)
