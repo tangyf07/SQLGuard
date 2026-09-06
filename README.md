@@ -142,16 +142,54 @@ Guards (any **BLOCK** wins, else any **APPROVAL**, else **ALLOW**):
 
 `ALLOW` | `BLOCK` | `REQUIRE_APPROVAL` with `risk`, `rule_id`, `reason`, `evidence`.
 
+
+## Deployment model (trusted executor)
+
+**非生产唯一边界** — this gate is not the sole production security control.
+
+| Concern | Where it lives |
+|---------|----------------|
+| DB credentials (`DATABASE_URL` / …) | **Trusted executor** only |
+| `policy.yaml` / catalog | **Trusted executor** (agents have no rewrite API) |
+| `approve` / `resolve` / `reject` | **Trusted executor** with approval token |
+| `check` / `hook` / MCP `query_sql`/`write_sql` | Agent-facing: evaluate / enqueue only |
+
+### Approval privilege (`SQL_WRITE_GATE_APPROVAL_TOKEN`)
+
+1. On the trusted executor, create a secret file (default `.logs/approval.key`, or set `SQL_WRITE_GATE_APPROVAL_KEY_FILE`).
+2. When calling `approve` / `resolve` / `reject`, set env `SQL_WRITE_GATE_APPROVAL_TOKEN` to that file's contents.
+3. Missing key file, missing token, or wrong token → **refuse** (CLI exit non-zero). Correct token → 0.21 behavior.
+4. Agents must **not** receive the key file or token. They may still enqueue `REQUIRE_APPROVAL` via normal write paths.
+
+### Target binding
+
+Approval records store `database_config_id` (fingerprint). Approve reconnect binds trusted credentials only for the **same** target. Queue against DB A then change env to DB B → approve **fail closed** (will not write to B).
+
+## SQL support matrix
+
+| Supported (gated) | Explicitly rejected (`unsupported_sql` BLOCK) |
+|-------------------|-----------------------------------------------|
+| Single-statement `SELECT` / `INSERT` / `UPDATE` / `DELETE` | Multi-statement scripts (`stmt1; stmt2`) |
+| DuckDB / PostgreSQL / MySQL / SQLite dialects via adapters | `MERGE` / `COPY` / `REPLACE` / raw `Command` |
+| Simple CTEs over read-only SELECT | Data-modifying CTE / nested DML under any root |
+| UPSERT `ON CONFLICT DO UPDATE` (PII/restricted on SET cols) | PostgreSQL `SELECT … INTO` |
+| Catalog-backed schema / PII / freshness / blast-radius | Ambiguous or unlisted write-shaped SQL |
+
+Anything dangerous or ambiguous **not** on the supported side → `unsupported_sql` BLOCK/REJECT (fail closed), never silent ALLOW.
+
 ## Boundaries (non-goals)
 
 - **非生产唯一边界** — combine with least-privilege DB roles, network isolation, and human workflows
 - Not a distributed approval lock, MySQL wire-protocol proxy, or Web UI
 - Not an enterprise DQ / lineage / ChatBI / multi-tenant platform
 
-See [CHANGELOG.md](CHANGELOG.md) for version history (v0.1 → v0.21).
+See [CHANGELOG.md](CHANGELOG.md) for version history (v0.1 → v0.22).
 
-## Backlog (post-0.21)
+## Backlog (post-0.22)
 
+- [x] Trusted-executor approval token + key file privilege separation (0.22)
+- [x] Approve target fingerprint fail-closed on DATABASE_URL swap (0.22)
+- [x] SQL support matrix + unsupported variant regressions (0.22)
 - [x] Three-state approve outcomes + unknown ≠ auto-retry (0.21)
 - [x] SQLite durable approval store + crash TTL → unknown (0.21)
 - [x] Multi-process single-write approve regressions (0.21)
