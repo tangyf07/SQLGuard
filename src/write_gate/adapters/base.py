@@ -102,7 +102,7 @@ def resolve_target(
       1. ``database=``
       2. ``database_url=``
       3. ``db_path=`` (explicit path wins over env so tests/demo stay DuckDB)
-      4. ``DATABASE_URL`` env
+      4. Env URLs: ``POSTGRES_URL``, ``MYSQL_URL``, then ``DATABASE_URL``
       5. default DuckDB warehouse
     """
     env = os.environ if environ is None else environ
@@ -112,7 +112,8 @@ def resolve_target(
     if db_path is not None:
         target = str(db_path)
         return detect_backend(target), target
-    env_url = env.get("DATABASE_URL")
-    if env_url:
-        return detect_backend(env_url), env_url
+    for key in ("POSTGRES_URL", "MYSQL_URL", "DATABASE_URL"):
+        env_url = env.get(key)
+        if env_url:
+            return detect_backend(env_url), env_url
     return BACKEND_DUCKDB, str(default_db_path())
