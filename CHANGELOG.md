@@ -2,6 +2,22 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [0.23.0] — 2026-09-06
+
+### Ops & controlled pilot
+
+- **Statement timeout**: configurable via `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` or policy `statement_timeout_sec` (default off). Wall-clock wrapper on check/execute/approve; Postgres/MySQL best-effort session SET. On timeout: check (no write) → `failed`; execute/approve after possible apply → `unknown` (0.21 three-state)
+- **Result limits**: cap SELECT / approve materialization rows (`SQL_WRITE_GATE_RESULT_ROW_LIMIT`, default 1000) and optional bytes; default **truncate + `truncated=true`** (`RESULT_OVERSIZE=block` to reject)
+- **Structured audit correlation**: every audit record has `request_id` (auto uuid / `SQL_WRITE_GATE_REQUEST_ID`), plus `approval_id`, `decision`, `execution_outcome`; failures still audited
+- **Log rotation**: size-based (default 10 MiB) and optional daily roll for `.logs` audit JSONL and approvals JSONL mirror; SQLite approvals SoT untouched
+- **Troubleshooting**: `docs/troubleshooting.md` (unknown handling, approval token, credentials, real-DB CI, ops knobs)
+- Keep **非生产唯一边界**. No distributed locks / Web UI / MySQL protocol proxy.
+
+### Docs / tests
+
+- README: ops knobs + troubleshooting link; backlog post-0.23
+- Tests: `tests/test_v023.py`; v0.17–v0.22 suites stay green
+
 ## [0.22.0] — 2026-09-06
 
 ### Security boundary & SQL coverage
