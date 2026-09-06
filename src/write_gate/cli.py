@@ -133,22 +133,16 @@ def _serialize_cell(value: object) -> object:
 
 
 def _materialize_result(result) -> dict[str, object] | None:
-    """Fetch rows before the connection closes; return serializable payload bits."""
-    if result is None:
-        return None
-    if isinstance(result, dict) and ("rows" in result or "rowcount" in result):
-        return result
+    """Fetch rows before the connection closes; return serializable payload bits.
+
+    v0.23: caps rows/bytes via runtime settings; default truncate + truncated=true.
+    """
+    from write_gate.results import ResultOversizeError, materialize_result
+
     try:
-        rows = result.fetchall()
-    except Exception:
-        return {"rowcount": getattr(result, "rowcount", None)}
-    material = []
-    for row in rows:
-        if isinstance(row, (list, tuple)):
-            material.append([_serialize_cell(c) for c in row])
-        else:
-            material.append(_serialize_cell(row))
-    return {"rows": material, "rowcount": len(material)}
+        return materialize_result(result)
+    except ResultOversizeError:
+        raise
 
 
 def _print_decision(decision: Decision, *, as_json: bool, result=None) -> int:
@@ -161,6 +155,8 @@ def _print_decision(decision: Decision, *, as_json: bool, result=None) -> int:
                     payload["rows"] = materialized["rows"]
                 if "rowcount" in materialized:
                     payload["rowcount"] = materialized["rowcount"]
+                if "truncated" in materialized:
+                    payload["truncated"] = materialized["truncated"]
         json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
         sys.stdout.write("\n")
     else:
