@@ -13,7 +13,7 @@ from typing import Any
 from write_gate.decision import ACTION_ALLOW
 from write_gate.wrapper import WriteGate
 
-QUERY_ROW_CAP = 50
+QUERY_ROW_CAP = 50  # legacy default; runtime result_row_limit preferred (v0.23)
 
 
 def _as_path(value: str | Path | None) -> Path | None:
@@ -134,13 +134,25 @@ def _execute(
         executed = decision.action == ACTION_ALLOW and result is not None
         rows = None
         rowcount = None
+        truncated = False
         if executed:
             rowcount = _rowcount(result)
             if include_rows:
-                rows = _fetch_rows(result, cap=QUERY_ROW_CAP)
-                if rowcount is None:
-                    rowcount = len(rows)
-    return decision_payload(decision, executed=executed, rowcount=rowcount, rows=rows)
+                from write_gate.results import materialize_result
+                from write_gate.runtime import load_runtime_settings
+
+                cfg = load_runtime_settings()
+                lim = cfg.result_row_limit if cfg.result_row_limit > 0 else QUERY_ROW_CAP
+                mat = materialize_result(result, settings=cfg, row_limit=lim)
+                if mat is not None:
+                    rows = list(mat.get("rows") or [])
+                    truncated = bool(mat.get("truncated"))
+                    if rowcount is None:
+                        rowcount = mat.get("rowcount", len(rows))
+    payload = decision_payload(decision, executed=executed, rowcount=rowcount, rows=rows)
+    if include_rows and executed:
+        payload["truncated"] = truncated
+    return payload
 
 
 def query_sql(
