@@ -57,7 +57,10 @@ jobs:
       - name: Install + test
         run: |
           python -m pip install -U pip
-          pip install -e ".[dev,postgres,mysql]"
+          python -m venv .venv
+          .venv/bin/pip install -U pip
+          .venv/bin/pip install -e ".[dev,postgres,mysql]"
+          .venv/bin/pip install build
           pip install build
           make test
 
