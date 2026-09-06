@@ -20,6 +20,7 @@ from write_gate.approvals import (
     mark_rejected,
     resolve_approval,
 )
+from write_gate.trust import TrustError, require_approval_trust
 from write_gate.audit import (
     format_audit_table,
     read_audit,
@@ -64,6 +65,17 @@ def _safe(value: object) -> str:
 def _approvals_path(args: argparse.Namespace) -> Path:
     raw = getattr(args, "approvals", None)
     return Path(raw) if raw else default_approvals_path()
+
+
+
+def _require_trust_or_exit() -> int | None:
+    """Gate approve/resolve/reject behind trusted-executor token. None = ok."""
+    try:
+        require_approval_trust()
+    except TrustError as exc:
+        sys.stderr.write(str(exc) + "\n")
+        return 1
+    return None
 
 
 def _gate_from_args(args: argparse.Namespace) -> WriteGate:
@@ -254,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     approve_p = sub.add_parser(
         "approve",
-        help="Execute a pending/failed approval id (re-runs guards; env approval only is cleared)",
+        help="Execute a pending/failed approval id (requires SQL_WRITE_GATE_APPROVAL_TOKEN; re-runs guards)",
         parents=[queue],
     )
     approve_p.add_argument("approval_id", help="Approval id")
@@ -277,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     reject_p = sub.add_parser(
         "reject",
-        help="Reject a pending/failed/unknown approval id without writing",
+        help="Reject a pending/failed/unknown approval id (requires SQL_WRITE_GATE_APPROVAL_TOKEN)",
         parents=[queue],
     )
     reject_p.add_argument("approval_id", help="Approval id")
@@ -286,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
         "resolve",
         help=(
             "Mark unknown/failed after manual DB verify without re-executing "
-            "(succeeded|failed|rejected)"
+            "(requires SQL_WRITE_GATE_APPROVAL_TOKEN; succeeded|failed|rejected)"
         ),
         parents=[queue],
     )
@@ -394,6 +406,9 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
 
 
 def _cmd_approve(args: argparse.Namespace) -> int:
+    denied = _require_trust_or_exit()
+    if denied is not None:
+        return denied
     path = _approvals_path(args)
     if bool(getattr(args, "force_unknown_check", False)):
         try:
@@ -458,6 +473,9 @@ def _cmd_approve(args: argparse.Namespace) -> int:
 
 
 def _cmd_reject(args: argparse.Namespace) -> int:
+    denied = _require_trust_or_exit()
+    if denied is not None:
+        return denied
     path = _approvals_path(args)
     rec = get_approval(args.approval_id, path=path)
     if rec is None or rec.status not in {STATUS_PENDING, STATUS_FAILED, STATUS_UNKNOWN}:
@@ -477,6 +495,9 @@ def _cmd_reject(args: argparse.Namespace) -> int:
 
 
 def _cmd_resolve(args: argparse.Namespace) -> int:
+    denied = _require_trust_or_exit()
+    if denied is not None:
+        return denied
     path = _approvals_path(args)
     try:
         rec = resolve_approval(
