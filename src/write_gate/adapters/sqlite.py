@@ -36,7 +36,12 @@ def explain_sql(table: str, predicate: str | None) -> str:
 
 
 def _parse_sqlite_path(dsn: str) -> str:
-    """Extract a filesystem path (or :memory:) from sqlite:/// / sqlite+aiosqlite://."""
+    """Extract a filesystem path (or :memory:) from sqlite:/// / sqlite+aiosqlite://.
+
+    Handles Unix absolute (``sqlite:////tmp/x.db`` → ``/tmp/x.db``), relative
+    (``sqlite:///rel.db``), ``:memory:``, and Windows drive letters
+    (``sqlite:///C:/temp/x.db`` → ``C:/temp/x.db``).
+    """
     raw = dsn.strip()
     lower = raw.lower()
     if lower.startswith("sqlite+aiosqlite://"):
@@ -53,9 +58,15 @@ def _parse_sqlite_path(dsn: str) -> str:
     if rest in (":memory:", "/:memory:"):
         return ":memory:"
     # Four-slash absolute: //tmp/x.db -> /tmp/x.db
+    # or //C:/temp/x.db -> /C:/temp/x.db (normalized below)
     if rest.startswith("//"):
-        return rest[1:]
-    # Three-slash form: /tmp/x.db or /relative.db
+        rest = rest[1:]
+    # Windows drive letter: /C:/path or C:/path (and backslash forms)
+    if len(rest) >= 3 and rest[0] == "/" and rest[1].isalpha() and rest[2] == ":":
+        rest = rest[1:]
+    if len(rest) >= 2 and rest[0].isalpha() and rest[1] == ":":
+        return rest.replace("\\", "/")
+    # Three-slash Unix absolute: /tmp/x.db
     if rest.startswith("/"):
         return rest
     return rest or ":memory:"
