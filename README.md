@@ -108,9 +108,14 @@ sql-write-gate serve --host 127.0.0.1 --port 8787
 | `POST` | `/v1/block` | Alias of `/v1/check` |
 | `POST` | `/v1/datapilot` | Alias of `/v1/execute` (1.1 semantics unchanged) |
 
-Request JSON: `{ "sql": "...", "actor"?, "model_id"?, "prompt_summary"?, "database"?, "policy"? }`.
+Request JSON: `{ "sql": "...", "actor"?, "model_id"?, "prompt_summary"?, "database"?, "db_path"?, "catalog"?, "policy"? }`.
 
 Response always includes `action` (`ALLOW` \| `BLOCK` \| `REQUIRE_APPROVAL`), `rule_id`, `reason`, `risk_score`, `risk_factors`, `executed`. Treat anything other than `ALLOW` as non-executing.
+
+### Honest boundaries (current — docs only)
+
+- **HTTP binding is not server-locked yet.** `sql-write-gate serve --policy/--catalog/--database` sets defaults, but each request body may still override `policy` / `catalog` / `database` / `db_path`. Do **not** treat body-supplied paths as a trust boundary in production; next hardening pass will bind these server-side only. CLI/MCP started with fixed flags remain the safer local path today.
+- **GitHub Release lags main.** Package / `main` is **1.1.2** (`7dc85dd`); GitHub **Latest Release** is still **v1.0.1**. Prefer install-from-main / pin commit `7dc85dd` for suite acceptance until a v1.1.x Release is cut.
 
 ### GameStream-style permissions
 

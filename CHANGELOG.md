@@ -4,6 +4,9 @@ All notable changes to **sql-write-gate** are documented here.
 
 ## [1.1.2] — 2026-09-07
 
+### Docs
+- README honest boundaries: HTTP body may still override serve policy/catalog/database; GitHub Latest Release still v1.0.1 while main is 1.1.2.
+
 ### Fixed
 - Seed/CI: default DuckDB path always `seed/warehouse.duckdb` in a checkout (so `make seed` and HTTP route tests agree on CI).
 
