@@ -7,11 +7,34 @@ from typing import Any
 from sqlglot import exp
 
 
+def qualified_table_name(node: exp.Table) -> str | None:
+    """Preserve catalog/schema qualification (``ads.t`` → ``ads.t``, not ``t``).
+
+    Exact identity is required so ``other.orders`` is not silently treated as
+    catalog/allowlist key ``orders``. Bare names (``orders``, ``ads_dau_di``)
+    stay bare.
+    """
+    parts: list[str] = []
+    for key in ("catalog", "db"):
+        part = node.args.get(key)
+        if part is None:
+            continue
+        name = getattr(part, "name", None)
+        if not name:
+            continue
+        parts.append(str(name).lower())
+    table = node.name
+    if not table:
+        return None
+    parts.append(str(table).lower())
+    return ".".join(parts)
+
+
 def ident(node: exp.Expression | None) -> str | None:
     if node is None:
         return None
     if isinstance(node, exp.Table):
-        return node.name.lower() if node.name else None
+        return qualified_table_name(node)
     if isinstance(node, exp.Schema):
         return ident(node.this)
     if isinstance(node, exp.Identifier):

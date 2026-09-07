@@ -39,6 +39,11 @@ class Catalog:
         return self.as_of_date - timedelta(days=self.freshness_days)
 
     def table(self, name: str) -> TableSpec | None:
+        """Exact catalog key only — no silent bare fallback for ``schema.table``.
+
+        Bare names (``orders``, ``ads_dau_di``) still match when that is the key.
+        Qualified refs like ``other.orders`` must be present under that exact key.
+        """
         return self.tables.get(name.lower())
 
 

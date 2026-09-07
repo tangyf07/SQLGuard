@@ -29,7 +29,7 @@ flowchart LR
 
 Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No API key.**
 
-> **v1.1.0 — SQLGuard** — stronger AST analysis, permissions, risk scores, schema hallucination block, DataPilot HTTP API; pilot-ready on the declared support matrix (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
+> **v1.1.1 — SQLGuard** — stronger AST analysis, permissions, risk scores, schema hallucination block, DataPilot HTTP API (`/v1/check`·`/v1/block`·`/v1/execute`·`/v1/datapilot`); cross-db qualified table identity; pilot-ready on the declared support matrix (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
 > **非生产唯一边界 / 非唯一边界** — **not** the sole production DB security boundary. Combine with least-privilege DB roles, network isolation, and human workflows.
 > **未列语法拒绝** — unsupported / ambiguous SQL → REJECT/BLOCK (`unsupported_sql`, fail closed), never silent ALLOW as read-only.
 
@@ -77,7 +77,7 @@ sql-write-gate serve --port 8787
 | CLI `proxy` | Gate then execute if ALLOW |
 | CLI `approve` / `resolve` / `reject` | Human approve / recover (trusted executor + token) |
 | CLI `audit` / `pending` / `init` / `exec` | Ops helpers |
-| CLI `serve` | SQLGuard DataPilot HTTP (`/v1/check`, `/v1/execute`) |
+| CLI `serve` | SQLGuard DataPilot HTTP (`/v1/check`, `/v1/block`, `/v1/execute`, `/v1/datapilot`) |
 
 ```bash
 sql-write-gate check "SQL"       # evaluate SQL; no execute
@@ -92,7 +92,7 @@ sql-write-gate init              # scaffold policy.yaml + catalog.json
 
 ## DataPilot API contract (SQLGuard)
 
-**契约稳定（v1.1+）**：DataPilot 出站只依赖 `BLOCK` / `EXECUTE`（HTTP `/v1/check`·`/v1/block` / `/v1/execute`，以及等价 MCP/CLI）。已合入的 1.1 路径勿破坏字段语义；扩展只加字段、不改既有含义。
+**契约稳定（v1.1+）**：DataPilot 出站只依赖 `BLOCK` / `EXECUTE`（HTTP `/v1/check`·`/v1/block` / `/v1/execute`·`/v1/datapilot`，以及等价 MCP/CLI）。已合入的 1.1 路径勿破坏字段语义；扩展只加字段、不改既有含义。
 
 DataPilot calls this gate **outbound**. Prefer MCP `query_sql` / `write_sql`, CLI `check` / `exec` / `proxy`, or HTTP:
 
@@ -106,6 +106,7 @@ sql-write-gate serve --host 127.0.0.1 --port 8787
 | `POST` | `/v1/check` | Evaluate only → `action` + `risk_score` (`executed: false`) |
 | `POST` | `/v1/execute` | Gate then execute **only on ALLOW** |
 | `POST` | `/v1/block` | Alias of `/v1/check` |
+| `POST` | `/v1/datapilot` | Alias of `/v1/execute` (1.1 semantics unchanged) |
 
 Request JSON: `{ "sql": "...", "actor"?, "model_id"?, "prompt_summary"?, "database"?, "policy"? }`.
 

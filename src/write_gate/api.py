@@ -2,9 +2,11 @@
 
 Contract (JSON)::
 
-    POST /v1/check     {"sql": "...", "actor"?, "model_id"?, "prompt_summary"?}
-    POST /v1/execute   same body — gate then execute on ALLOW only
-    GET  /healthz      {"ok": true, "product": "SQLGuard", "version": "..."}
+    POST /v1/check      {"sql": "...", "actor"?, "model_id"?, "prompt_summary"?}
+    POST /v1/block      alias of /v1/check (evaluate only)
+    POST /v1/execute    same body — gate then execute on ALLOW only
+    POST /v1/datapilot  alias of /v1/execute (1.1 semantics unchanged)
+    GET  /healthz       {"ok": true, "product": "SQLGuard", "version": "..."}
 
 Responses always include ``action`` (ALLOW|BLOCK|REQUIRE_APPROVAL),
 ``risk_score``, ``risk_factors``, ``rule_id``, ``reason``, and for execute
@@ -78,7 +80,12 @@ def handle_datapilot_request(
             "package": "sql-write-gate",
         }
 
-    if method != "POST" or route not in {"/v1/check", "/v1/execute", "/v1/block"}:
+    if method != "POST" or route not in {
+        "/v1/check",
+        "/v1/execute",
+        "/v1/block",
+        "/v1/datapilot",
+    }:
         return 404, {"error": "not_found", "path": route}
 
     body = body or {}
@@ -86,9 +93,8 @@ def handle_datapilot_request(
     if not sql or not isinstance(sql, str):
         return 400, {"error": "missing_sql", "action": "BLOCK"}
 
-    # /v1/block is an alias that always evaluates (same as check) — DataPilot
-    # may call it when it only wants a verdict without execute intent.
-    do_execute = route == "/v1/execute"
+    # /v1/block → check (evaluate only); /v1/datapilot → execute (ALLOW only).
+    do_execute = route in {"/v1/execute", "/v1/datapilot"}
     with _gate_from_body(body, defaults=defaults) as gate:
         if do_execute:
             decision, result = gate.execute(sql)
@@ -174,7 +180,7 @@ def run_serve_cli(
     httpd = serve(host, port, defaults=defaults)
     sys.stderr.write(
         f"SQLGuard DataPilot API listening on http://{host}:{port} "
-        f"(POST /v1/check|/v1/execute)\n"
+        f"(POST /v1/check|/v1/block|/v1/execute|/v1/datapilot)\n"
     )
     try:
         httpd.serve_forever()

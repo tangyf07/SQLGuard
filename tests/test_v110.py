@@ -1,4 +1,4 @@
-"""SQLGuard 1.1.0: AST patterns, permissions, risk score, hallucination, audit, API."""
+"""SQLGuard 1.1.x: AST patterns, permissions, risk score, hallucination, audit, API."""
 
 from __future__ import annotations
 
@@ -19,10 +19,10 @@ from write_gate.sqlguard import PRODUCT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_version_is_110():
-    assert __version__ == "1.1.0"
-    assert 'version = "1.1.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## [1.1.0]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+def test_version_is_111():
+    assert __version__ == "1.1.1"
+    assert 'version = "1.1.1"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## [1.1.1]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert PRODUCT == "SQLGuard"
 
 
@@ -172,7 +172,7 @@ def test_datapilot_api_check_and_execute(tmp_path):
     status, health = handle_datapilot_request("GET", "/healthz", None, defaults=defaults)
     assert status == 200
     assert health["ok"] is True
-    assert health["version"] == "1.1.0"
+    assert health["version"] == "1.1.1"
 
     # Legal insert — use check (no mutate shared seed); execute path covered by demo
     status, payload = handle_datapilot_request(
@@ -242,3 +242,163 @@ def test_datapilot_field_on_api_response():
     assert status == 200
     assert payload.get("datapilot") == "BLOCK"
 
+
+def test_datapilot_http_routes_check_block_execute(tmp_path):
+    """HTTP-only path DataPilot can rely on: check / block / execute (+ datapilot alias)."""
+    import shutil
+
+    db = tmp_path / "wh.duckdb"
+    shutil.copy(ROOT / "seed" / "warehouse.duckdb", db)
+    defaults = {
+        "db_path": str(db),
+        "policy": str(ROOT / "examples" / "policy.demo.yaml"),
+        "agent": "datapilot",
+    }
+    block_sql = "DELETE FROM orders"
+    allow_sql = (
+        "INSERT INTO orders (order_id, user_id, amount, dt, status) "
+        "VALUES (910088, 1, 1.0, '2026-09-01', 'paid')"
+    )
+
+    status, payload = handle_datapilot_request(
+        "POST", "/v1/check", {"sql": block_sql}, defaults=defaults
+    )
+    assert status == 200
+    assert payload["action"] == "BLOCK"
+    assert payload["executed"] is False
+    assert payload.get("datapilot") == "BLOCK"
+
+    status, payload = handle_datapilot_request(
+        "POST", "/v1/block", {"sql": block_sql}, defaults=defaults
+    )
+    assert status == 200
+    assert payload["action"] == "BLOCK"
+    assert payload["executed"] is False
+
+    status, payload = handle_datapilot_request(
+        "POST", "/v1/execute", {"sql": block_sql}, defaults=defaults
+    )
+    assert status == 200
+    assert payload["action"] == "BLOCK"
+    assert payload["executed"] is False
+
+    status, payload = handle_datapilot_request(
+        "POST", "/v1/execute", {"sql": allow_sql}, defaults=defaults
+    )
+    assert status == 200
+    assert payload["action"] == "ALLOW"
+    assert payload["executed"] is True
+    assert payload.get("datapilot") == "EXECUTE"
+
+    # /v1/datapilot is alias of execute (gate then run on ALLOW)
+    allow_sql2 = (
+        "INSERT INTO orders (order_id, user_id, amount, dt, status) "
+        "VALUES (910089, 1, 1.0, '2026-09-01', 'paid')"
+    )
+    status, payload = handle_datapilot_request(
+        "POST", "/v1/datapilot", {"sql": allow_sql2}, defaults=defaults
+    )
+    assert status == 200
+    assert payload["action"] == "ALLOW"
+    assert payload["executed"] is True
+    assert payload.get("datapilot") == "EXECUTE"
+
+    status, payload = handle_datapilot_request(
+        "POST", "/v1/datapilot", {"sql": block_sql}, defaults=defaults
+    )
+    assert status == 200
+    assert payload["action"] == "BLOCK"
+    assert payload["executed"] is False
+
+
+def test_permissions_table_outside_allowlist_blocks():
+    """Unknown table relative to permissions allowlist → BLOCK (table_permission)."""
+    policy = policy_from_dict(
+        {
+            "environment": "demo",
+            "rules": {
+                "select": "allow",
+                "insert": "allow",
+                "update": "allow",
+                "delete": "allow",
+                "ddl": "block",
+            },
+            "permissions": {"enforce": True, "tables": {"ads_dau_di": ["select"]}},
+            "hallucination": {
+                "allow_unknown_tables": False,
+                "allow_unknown_columns": False,
+            },
+        }
+    )
+    # orders is in catalog but not in permissions allowlist
+    ev = evaluate("SELECT order_id FROM orders", load_catalog(), policy=policy)
+    assert ev.action == "BLOCK"
+    assert ev.rule_id == "table_permission"
+
+
+def test_allow_unknown_columns_false_blocks_hallucination():
+    policy = policy_from_dict(
+        {
+            "environment": "demo",
+            "rules": {
+                "select": "allow",
+                "insert": "allow",
+                "update": "allow",
+                "delete": "allow",
+                "ddl": "block",
+            },
+            "hallucination": {
+                "allow_unknown_tables": False,
+                "allow_unknown_columns": False,
+            },
+        }
+    )
+    assert policy.allow_unknown_columns is False
+    ev = evaluate("SELECT not_a_real_col FROM orders", load_catalog(), policy=policy)
+    assert ev.action == "BLOCK"
+    assert ev.rule_id == "schema_hallucination"
+
+
+def test_cross_db_same_name_does_not_match_bare_orders():
+    """other.orders / evil.orders must NOT collapse to catalog/allowlist key orders."""
+    parsed = parse("SELECT order_id FROM other.orders")
+    assert parsed.table == "other.orders"
+    assert "other.orders" in parsed.tables_referenced
+    assert "orders" not in parsed.tables_referenced or parsed.table != "orders"
+
+    parsed2 = parse("SELECT * FROM ads.t")
+    assert parsed2.table == "ads.t"
+    assert "ads.t" in parsed2.tables_referenced
+
+    policy = policy_from_dict(
+        {
+            "environment": "demo",
+            "rules": {
+                "select": "allow",
+                "insert": "allow",
+                "update": "allow",
+                "delete": "allow",
+                "ddl": "block",
+            },
+            "permissions": {"enforce": True, "tables": {"orders": ["select"]}},
+            "hallucination": {
+                "allow_unknown_tables": False,
+                "allow_unknown_columns": False,
+            },
+        }
+    )
+    assert policy.allow_unknown_tables is False
+    # Catalog + allowlist have bare orders; qualified ref must BLOCK
+    for sql in (
+        "SELECT order_id FROM other.orders",
+        "SELECT order_id FROM evil.orders",
+    ):
+        ev = evaluate(sql, load_catalog(), policy=policy)
+        assert ev.action == "BLOCK", (sql, ev.rule_id, ev.reason)
+        # Must not treat as known bare orders (ALLOW)
+        assert ev.rule_id in {"schema_hallucination", "table_permission"}
+
+    # Bare name still works (DataPilot / G7 style)
+    bare = parse("SELECT order_id FROM ads_dau_di")
+    assert bare.table == "ads_dau_di"
+    assert bare.tables_referenced == ["ads_dau_di"]

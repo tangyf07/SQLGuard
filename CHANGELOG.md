@@ -2,6 +2,14 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [1.1.1] — 2026-09-07
+
+### Fixes (P0/P1 GPT 验收)
+
+- **Serve routes confirmed**: `POST /v1/check` (evaluate), `/v1/execute` (gate then execute on ALLOW), `/v1/block` (alias of check); optional `POST /v1/datapilot` alias of execute. DataPilot BLOCK/EXECUTE contract unchanged.
+- **Cross-db table identity**: schema-qualified refs (`other.orders`, `ads.t`) keep qualification in AST/`tables_referenced`; catalog + permissions use **exact key only** (no silent bare fallback). Bare names (`orders`, `ads_dau_di`) still work. `allow_unknown_tables/columns=false` defaults unchanged.
+- **Tests**: HTTP check/block/execute (+ datapilot alias); permissions outside allowlist; unknown column; cross-db same-name BLOCK.
+
 ## [1.1.0] — 2026-09-06
 
 ### SQLGuard depth (evolve-in-place)
