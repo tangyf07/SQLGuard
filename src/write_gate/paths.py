@@ -49,10 +49,10 @@ def default_catalog_path() -> Path:
 
 
 def default_db_path() -> Path:
+    # Always prefer checkout seed path (even before gen_seed creates the file),
+    # so make seed / CI write to seed/warehouse.duckdb instead of cwd root.
     if CHECKOUT_ROOT is not None:
-        seed_db = CHECKOUT_ROOT / "seed" / "warehouse.duckdb"
-        if seed_db.is_file():
-            return seed_db
+        return CHECKOUT_ROOT / "seed" / "warehouse.duckdb"
     return Path.cwd() / "warehouse.duckdb"
 
 

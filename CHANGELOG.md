@@ -2,6 +2,11 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [1.1.2] — 2026-09-07
+
+### Fixed
+- Seed/CI: default DuckDB path always `seed/warehouse.duckdb` in a checkout (so `make seed` and HTTP route tests agree on CI).
+
 ## [1.1.1] — 2026-09-07
 
 ### Fixes (P0/P1 GPT 验收)

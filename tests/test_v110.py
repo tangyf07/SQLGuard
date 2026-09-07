@@ -20,9 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_is_111():
-    assert __version__ == "1.1.1"
-    assert 'version = "1.1.1"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## [1.1.1]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert __version__ == "1.1.2"
+    assert 'version = "1.1.2"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## [1.1.2]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert PRODUCT == "SQLGuard"
 
 
@@ -172,7 +172,7 @@ def test_datapilot_api_check_and_execute(tmp_path):
     status, health = handle_datapilot_request("GET", "/healthz", None, defaults=defaults)
     assert status == 200
     assert health["ok"] is True
-    assert health["version"] == "1.1.1"
+    assert health["version"] == "1.1.2"
 
     # Legal insert — use check (no mutate shared seed); execute path covered by demo
     status, payload = handle_datapilot_request(
@@ -247,8 +247,14 @@ def test_datapilot_http_routes_check_block_execute(tmp_path):
     """HTTP-only path DataPilot can rely on: check / block / execute (+ datapilot alias)."""
     import shutil
 
+    from write_gate.paths import SEED_DIR
+
+    seed_db = SEED_DIR / "warehouse.duckdb"
+    if not seed_db.is_file():
+        seed_db = ROOT / "seed" / "warehouse.duckdb"
+    assert seed_db.is_file(), f"missing seed duckdb at {seed_db}; run make seed"
     db = tmp_path / "wh.duckdb"
-    shutil.copy(ROOT / "seed" / "warehouse.duckdb", db)
+    shutil.copy(seed_db, db)
     defaults = {
         "db_path": str(db),
         "policy": str(ROOT / "examples" / "policy.demo.yaml"),
