@@ -5,15 +5,18 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一句话：**SQLGuard**（仓库 [`tangyf07/SQLGuard`](https://github.com/tangyf07/SQLGuard)；PyPI/CLI 包名仍为 `sql-write-gate`）= 面向 AI Agent 的 **SQL 安全执行网关**。简历与对外统一写 **SQLGuard**。
+**SQLGuard**（仓库 [`tangyf07/SQLGuard`](https://github.com/tangyf07/SQLGuard)；PyPI/CLI 包名仍为 `sql-write-gate`）= 面向 AI Agent / Text2SQL 出站路径的 **确定性 SQL 安全执行网关**。
 
-**Seal (3 min):** [SEAL.md](SEAL.md) — `make seal` runs exactly 4 core cases and prints `ALLOW`/`BLOCK` + `rule_id` + evidence.
-Expected: legal→ALLOW/ok · PII→BLOCK/pii_column · schema→BLOCK/schema_hallucination · expired→BLOCK/expired_partition.
-非生产唯一边界 — not the sole production DB security boundary.
+定位：数据消费安全向的**工程探索**；服务数据开发主线（[RetailDW](https://github.com/tangyf07/RetailDW) / [GameStream](https://github.com/tangyf07/GameStream)），**不是**个人作品集的一号旗舰项目。
 
+## Problem
 
-- [GameStream](https://github.com/tangyf07/GameStream)（指标 / ADS）  
-- [DataPilot](https://github.com/tangyf07/DataPilot)（问数 → Text2SQL → 出站门禁）  
+Agent / Text2SQL 会对仓表直接发 SQL。错误 JOIN、PII 写入、schema 幻觉、过期分区写回等，不能靠模型自觉。需要执行前的确定性 `ALLOW` / `BLOCK`（及必要时人工审批），且**判定路径不引入 LLM**。
+
+## Architecture
+
+- [RetailDW](https://github.com/tangyf07/RetailDW) / [GameStream](https://github.com/tangyf07/GameStream)（仓表 / 指标 ADS）— 数据开发主线
+- [DataPilot](https://github.com/tangyf07/DataPilot)（问数 → Text2SQL → 出站门禁）
 - 本仓：SQLGuard 执行前 BLOCK / EXECUTE
 
 ```mermaid
@@ -34,9 +37,52 @@ flowchart LR
 
 Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No API key.**
 
-> **v1.1.1 — SQLGuard** — stronger AST analysis, permissions, risk scores, schema hallucination block, DataPilot HTTP API (`/v1/check`·`/v1/block`·`/v1/execute`·`/v1/datapilot`); cross-db qualified table identity; pilot-ready on the declared support matrix (DuckDB / PostgreSQL / MySQL / SQLite + listed SQL features + entrypoints below).
-> **非生产唯一边界 / 非唯一边界** — **not** the sole production DB security boundary. Combine with least-privilege DB roles, network isolation, and human workflows.
-> **未列语法拒绝** — unsupported / ambiguous SQL → REJECT/BLOCK (`unsupported_sql`, fail closed), never silent ALLOW as read-only.
+## Guarantees
+
+在已声明支持矩阵上（**pilot-ready**：DuckDB / PostgreSQL / MySQL / SQLite + 已列 SQL / 入口）：
+
+- 确定性 `ALLOW` / `BLOCK` / `REQUIRE_APPROVAL`，带 `rule_id` + evidence
+- 未列 / 歧义 SQL → fail-closed `unsupported_sql`（从不静默当只读 ALLOW）
+- Seal 四案稳定：legal→ALLOW/ok · PII→BLOCK/pii_column · schema→BLOCK/schema_hallucination · expired→BLOCK/expired_partition
+
+**非生产唯一边界 / 非唯一边界** — **not** the sole production DB security boundary. Combine with least-privilege DB roles, network isolation, and human workflows.
+
+## Quickstart
+
+```bash
+pip install -e ".[dev]"                 # or: make install
+make seal                               # 4 core ALLOW/BLOCK cases (~3 min)
+```
+
+```bash
+sql-write-gate check "DELETE FROM orders"
+# → BLOCKED  rule=delete_without_where
+```
+
+更多安装与入口见下方 [Install](#install) / [Entrypoints](#entrypoints-stable)。
+
+## Evidence
+
+`make seal` 固定跑 4 个核心用例，stdout 打印 `ALLOW`/`BLOCK` + `rule_id` + evidence。详情与截图：[SEAL.md](SEAL.md)。
+
+| # | Case | Verdict | rule_id |
+|---|------|---------|---------|
+| 1 | legal write | ALLOW | `ok` |
+| 2 | PII write | BLOCK | `pii_column` |
+| 3 | schema mismatch | BLOCK | `schema_hallucination` |
+| 4 | expired partition | BLOCK | `expired_partition` |
+
+![make seal](docs/evidence/make-seal.png)
+
+## Limitations
+
+- **非生产唯一边界 / 非唯一边界** — 须与最小权限 DB 角色、网络隔离、人工流程并用
+- 仅声明矩阵：DuckDB / PostgreSQL / MySQL / SQLite + 已列 SQL；未列语法拒绝
+- 不是分布式审批锁、MySQL wire 代理、Web UI、企业 DQ/血缘/多租户平台
+- HTTP `serve` 请求体仍可覆盖 policy/catalog/database（尚未 server-lock）；本地固定 flag 的 CLI/MCP 更稳妥
+- GitHub Latest Release 可能滞后 `main`；以包版本 / commit 为准
+
+---
 
 ## Install
 

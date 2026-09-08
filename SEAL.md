@@ -2,8 +2,6 @@
 
 **What:** Deterministic SQL write gate for AI agents — ALLOW/BLOCK with rule_id + evidence. No LLM.
 
-**One command:**
-
 ![make seal](docs/evidence/make-seal.png)
 
 **One command:**
