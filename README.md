@@ -7,6 +7,11 @@
 
 一句话：**SQLGuard**（仓库名 `sql-write-gate`）= 面向 AI Agent 的 **SQL 安全执行网关**；简历项目名建议写 **SQLGuard**。
 
+**Seal (3 min):** [SEAL.md](SEAL.md) — `make seal` runs exactly 4 core cases and prints `ALLOW`/`BLOCK` + `rule_id` + evidence.
+Expected: legal→ALLOW/ok · PII→BLOCK/pii_column · schema→BLOCK/schema_hallucination · expired→BLOCK/expired_partition.
+非生产唯一边界 — not the sole production DB security boundary.
+
+
 - [GameStream](https://github.com/tangyf07/GameStream)（指标 / ADS）  
 - [DataPilot](https://github.com/tangyf07/DataPilot)（问数 → Text2SQL → 出站门禁）  
 - 本仓：SQLGuard 执行前 BLOCK / EXECUTE
@@ -58,7 +63,7 @@ sql-write-gate check "DELETE FROM users"
 ## Try it
 
 ```bash
-make install && make test && make demo
+make install && make test && make seal   # or: make demo
 sql-write-gate check "DELETE FROM orders"
 # → BLOCKED  delete_without_where
 sql-write-gate datapilot --json "SELECT o.order_id FROM orders o CROSS JOIN orders p"
