@@ -1,11 +1,11 @@
-# sql-write-gate (SQLGuard)
+# SQLGuard
 
 [![CI](https://github.com/tangyf07/SQLGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/tangyf07/SQLGuard/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/tangyf07/sql-write-gate)](https://github.com/tangyf07/SQLGuard/releases/latest)
+[![Release](https://img.shields.io/github/v/release/tangyf07/SQLGuard)](https://github.com/tangyf07/SQLGuard/releases/latest)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-一句话：**SQLGuard**（仓库名 `sql-write-gate`）= 面向 AI Agent 的 **SQL 安全执行网关**；简历项目名建议写 **SQLGuard**。
+一句话：**SQLGuard**（仓库 [`tangyf07/SQLGuard`](https://github.com/tangyf07/SQLGuard)；PyPI/CLI 包名仍为 `sql-write-gate`）= 面向 AI Agent 的 **SQL 安全执行网关**。简历与对外统一写 **SQLGuard**。
 
 **Seal (3 min):** [SEAL.md](SEAL.md) — `make seal` runs exactly 4 core cases and prints `ALLOW`/`BLOCK` + `rule_id` + evidence.
 Expected: legal→ALLOW/ok · PII→BLOCK/pii_column · schema→BLOCK/schema_hallucination · expired→BLOCK/expired_partition.
@@ -19,7 +19,7 @@ Expected: legal→ALLOW/ok · PII→BLOCK/pii_column · schema→BLOCK/schema_ha
 ```mermaid
 flowchart LR
   NL[自然语言问数] --> DP[DataPilot]
-  DP --> SG[SQLGuard / sql-write-gate]
+  DP --> SG[SQLGuard]
   SG -->|只读 ADS SQL| GS[GameStream ADS]
   subgraph GS_pipe [GameStream 实时链路]
     E[游戏行为事件] --> K[Kafka]
