@@ -2,6 +2,13 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [Unreleased]
+
+### Docs
+- README second-wave unify: first-screen **Why → Architecture → Guarantees → Quickstart → Evidence → Design decisions → Limitations → Docs**.
+- Reflect P0: HTTP `serve` server-locked binding; audit SQL default redaction (`SQL_WRITE_GATE_AUDIT_SQL_MODE`).
+- Suite narrative: third ring (RetailDW → GameStream → SQLGuard); engineering exploration for data-consumption safety — not flagship #1.
+
 ## [1.1.3] — 2026-09-09
 
 ### Security (P0 HTTP trust boundary)
@@ -15,7 +22,7 @@ All notable changes to **sql-write-gate** are documented here.
 ## [1.1.2] — 2026-09-07
 
 ### Docs
-- README honest boundaries: HTTP body may still override serve policy/catalog/database; GitHub Latest Release still v1.0.1 while main is 1.1.2.
+- README honest boundaries (historical, **superseded by 1.1.3 P0 server-lock**): at 1.1.2 HTTP body could still override serve policy/catalog/database; GitHub Latest Release still v1.0.1 while main is 1.1.2.
 
 ### Fixed
 - Seed/CI: default DuckDB path always `seed/warehouse.duckdb` in a checkout (so `make seed` and HTTP route tests agree on CI).
