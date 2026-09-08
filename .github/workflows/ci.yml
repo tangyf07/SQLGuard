@@ -9,6 +9,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
     services:
       postgres:
         image: postgres:16
@@ -38,17 +43,19 @@ jobs:
           --health-timeout 5s
           --health-retries 15
 
-    env:
-      POSTGRES_URL: postgresql://gate:gate@localhost:5432/writegate
-      MYSQL_URL: mysql://gate:gate@127.0.0.1:3306/writegate
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Enable live DB integration (3.12 only)
+        if: matrix.python-version == '3.12'
+        run: |
+          echo "POSTGRES_URL=postgresql://gate:gate@localhost:5432/writegate" >> "$GITHUB_ENV"
+          echo "MYSQL_URL=mysql://gate:gate@127.0.0.1:3306/writegate" >> "$GITHUB_ENV"
 
       - name: Install (editable + extras)
         run: |
@@ -64,14 +71,16 @@ jobs:
         run: make test
 
       - name: Build wheel
+        if: matrix.python-version == '3.12'
         run: python -m build
 
       - name: Install wheel into clean venv and smoke
+        if: matrix.python-version == '3.12'
         run: |
           python -m venv /tmp/wheel-venv
           /tmp/wheel-venv/bin/pip install -U pip
           /tmp/wheel-venv/bin/pip install dist/*.whl
-          /tmp/wheel-venv/bin/pip install "pytest>=8" pyyaml "duckdb>=1.1" "sqlglot>=25" "psycopg[binary]>=3.1" pymysql
+          /tmp/wheel-venv/bin/pip install "pytest>=8" pyyaml "duckdb>=1.1" "sqlglot>=25,<31" "psycopg[binary]>=3.1" pymysql
           /tmp/wheel-venv/bin/python -c "import write_gate; print('installed', write_gate.__version__)"
           # Installed wheel has no checkout seed; init cwd policy/catalog. Clear service URLs so smoke uses DuckDB.
           unset POSTGRES_URL MYSQL_URL DATABASE_URL || true

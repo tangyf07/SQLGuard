@@ -2,6 +2,16 @@
 
 All notable changes to **sql-write-gate** are documented here.
 
+## [1.1.3] — 2026-09-09
+
+### Security (P0 HTTP trust boundary)
+- `serve` locks database / policy / catalog / environment at startup; request bodies may only supply `sql`, `actor`, `model_id`, `prompt_summary`.
+- Body fields that override `policy` / `catalog` / `database` / `db_path` / `environment` are rejected (`400 trust_boundary_violation`).
+- Non-loopback binds (including `0.0.0.0` / `::`) require `--auth-token` or `SQL_WRITE_GATE_HTTP_TOKEN`; all-interfaces without auth is refused at startup.
+- Audit SQL defaults to literal **redact** (`SQL_WRITE_GATE_AUDIT_SQL_MODE=redact|hash|plain`).
+- `sqlglot` compatibility ceiling: `>=25,<31`.
+- CI matrix covers Python 3.11 and 3.12 (live Postgres/MySQL integration 3.12-only).
+
 ## [1.1.2] — 2026-09-07
 
 ### Docs

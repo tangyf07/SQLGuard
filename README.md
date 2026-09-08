@@ -79,7 +79,7 @@ sql-write-gate check "DELETE FROM orders"
 - **非生产唯一边界 / 非唯一边界** — 须与最小权限 DB 角色、网络隔离、人工流程并用
 - 仅声明矩阵：DuckDB / PostgreSQL / MySQL / SQLite + 已列 SQL；未列语法拒绝
 - 不是分布式审批锁、MySQL wire 代理、Web UI、企业 DQ/血缘/多租户平台
-- HTTP `serve` 请求体仍可覆盖 policy/catalog/database（尚未 server-lock）；本地固定 flag 的 CLI/MCP 更稳妥
+- HTTP `serve`：policy/catalog/database 已在启动时 server-lock；非 loopback / `0.0.0.0` 须 `--auth-token` / `SQL_WRITE_GATE_HTTP_TOKEN`（详见下方 Trust boundary）
 - GitHub Latest Release 可能滞后 `main`；以包版本 / commit 为准
 
 ---
@@ -148,7 +148,9 @@ sql-write-gate init              # scaffold policy.yaml + catalog.json
 DataPilot calls this gate **outbound**. Prefer MCP `query_sql` / `write_sql`, CLI `check` / `exec` / `proxy`, or HTTP:
 
 ```bash
-sql-write-gate serve --host 127.0.0.1 --port 8787
+sql-write-gate serve --host 127.0.0.1 --port 8787 \
+  --policy policy.yaml --catalog catalog.json --database seed/warehouse.duckdb
+# Non-loopback / 0.0.0.0 requires: --auth-token SECRET  (or SQL_WRITE_GATE_HTTP_TOKEN)
 ```
 
 | Method | Path | Behavior |
@@ -159,14 +161,15 @@ sql-write-gate serve --host 127.0.0.1 --port 8787
 | `POST` | `/v1/block` | Alias of `/v1/check` |
 | `POST` | `/v1/datapilot` | Alias of `/v1/execute` (1.1 semantics unchanged) |
 
-Request JSON: `{ "sql": "...", "actor"?, "model_id"?, "prompt_summary"?, "database"?, "db_path"?, "catalog"?, "policy"? }`.
+Request JSON: `{ "sql": "...", "actor"?, "model_id"?, "prompt_summary"? }` only. `serve` locks `--policy` / `--catalog` / `--database` / environment at startup; body overrides of those fields are **rejected**.
 
 Response always includes `action` (`ALLOW` \| `BLOCK` \| `REQUIRE_APPROVAL`), `rule_id`, `reason`, `risk_score`, `risk_factors`, `executed`. Treat anything other than `ALLOW` as non-executing.
 
-### Honest boundaries (current — docs only)
+### Trust boundary (HTTP `serve`)
 
-- **HTTP binding is not server-locked yet.** `sql-write-gate serve --policy/--catalog/--database` sets defaults, but each request body may still override `policy` / `catalog` / `database` / `db_path`. Do **not** treat body-supplied paths as a trust boundary in production; next hardening pass will bind these server-side only. CLI/MCP started with fixed flags remain the safer local path today.
-- **GitHub Release lags main.** Package / `main` is **1.1.2** (`7dc85dd`); GitHub **Latest Release** is still **v1.0.1**. Prefer install-from-main / pin commit `7dc85dd` for suite acceptance until a v1.1.x Release is cut.
+- **Server-locked at startup.** `sql-write-gate serve --policy/--catalog/--database` (plus environment from the locked policy) is bound for the process lifetime. Request bodies may only supply `sql` / `actor` / `model_id` / `prompt_summary`; overrides of `policy` / `catalog` / `database` / `db_path` / `environment` return `400 trust_boundary_violation`.
+- **Auth for non-loopback.** Binding `127.0.0.1` / `::1` may omit auth. Non-loopback hosts (including `0.0.0.0` / `::`) **require** `--auth-token` or `SQL_WRITE_GATE_HTTP_TOKEN`; all-interfaces without auth is refused at startup. Present `Authorization: Bearer <token>` or `X-SQLGuard-Token`.
+- **GitHub Release lags main.** Package / `main` tracks the latest commit; GitHub **Latest Release** may lag. Prefer install-from-main / pin the tip SHA for suite acceptance until a matching Release is cut.
 
 ### GameStream-style permissions
 
@@ -222,7 +225,7 @@ Anything **not** in this matrix (other warehouses, wire-protocol proxies, distri
 - Approval state machine (SQLite source of truth + JSONL mirror): `pending`→`executing`→`succeeded`|`failed`|`unknown` (+ `rejected`)
 - Atomic claim under `fcntl.flock` + SQLite `BEGIN IMMEDIATE` (single-host; fail closed without flock)
 - Three-state execute outcomes; **`unknown`/`executing` never auto-retried** — use `resolve` or `approve --allow-unknown-retry` after manual DB verify
-- JSONL audit (redacts URL passwords; records execute failures / unknown; `request_id` + `approval_id` + `execution_outcome` correlation; rotatable)
+- JSONL audit (redacts URL passwords; **SQL literals redacted by default** via `SQL_WRITE_GATE_AUDIT_SQL_MODE=redact|hash|plain`; records execute failures / unknown; `request_id` + `approval_id` + `execution_outcome` correlation; rotatable)
 
 ## Platform support matrix
 
@@ -385,6 +388,8 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 | `SQL_WRITE_GATE_RESULT_ROW_LIMIT` | `1000` | Cap SELECT/approve rows (truncate + `truncated=true`) |
 | `SQL_WRITE_GATE_RESULT_BYTE_LIMIT` | `0` (off) | Hard byte cap on materialized rows (payload ≤ limit, or `ResultOversizeError` when `RESULT_OVERSIZE=block`; oversized single row never returned intact) |
 | `SQL_WRITE_GATE_RESULT_OVERSIZE` | `truncate` | `truncate` (shrink/omit to keep ≤ byte/row caps) or `block` (`ResultOversizeError`) |
+| `SQL_WRITE_GATE_AUDIT_SQL_MODE` | `redact` | Audit SQL storage: `redact` (literal scrub, default), `hash` (`sha256:…`), or `plain` (verbatim) |
+| `SQL_WRITE_GATE_HTTP_TOKEN` | (optional on loopback) | Bearer token for `serve`; **required** for non-loopback / `0.0.0.0` binds |
 | `SQL_WRITE_GATE_AUDIT_MAX_BYTES` | `10 MiB` | Rotate audit / approvals JSONL by size |
 | `SQL_WRITE_GATE_AUDIT_ROTATE_DAILY` | `false` | Also rotate JSONL per UTC day |
 | `SQL_WRITE_GATE_REQUEST_ID` | auto uuid4 | Audit correlation id |

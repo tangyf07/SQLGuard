@@ -13,3 +13,5 @@ seed/orders.csv
 .logs/demo_audit.jsonl
 build/
 dist/
+
+.pytest_tmp/
