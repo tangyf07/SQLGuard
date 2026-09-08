@@ -4,6 +4,10 @@
 
 **One command:**
 
+![make seal](docs/evidence/make-seal.png)
+
+**One command:**
+
 ```bash
 make seal
 ```
