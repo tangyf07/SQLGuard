@@ -7,9 +7,9 @@
 
 **SQLGuard**（仓库 [`tangyf07/SQLGuard`](https://github.com/tangyf07/SQLGuard)；PyPI/CLI 包名仍为 `sql-write-gate`）= 面向 AI Agent / Text2SQL 出站路径的 **确定性 SQL 安全执行网关**。
 
-定位：数据消费安全向的**工程探索**；服务数据开发主线（[RetailDW](https://github.com/tangyf07/RetailDW) / [GameStream](https://github.com/tangyf07/GameStream)），**不是**个人作品集的一号旗舰项目。
+Suite 第三环：**[RetailDW](https://github.com/tangyf07/RetailDW) → [GameStream](https://github.com/tangyf07/GameStream) → SQLGuard**。数据消费安全向的工程探索，服务数据开发主线 — **不是**个人作品集的一号旗舰项目。
 
-## Problem
+## Why
 
 Agent / Text2SQL 会对仓表直接发 SQL。错误 JOIN、PII 写入、schema 幻觉、过期分区写回等，不能靠模型自觉。需要执行前的确定性 `ALLOW` / `BLOCK`（及必要时人工审批），且**判定路径不引入 LLM**。
 
@@ -44,6 +44,8 @@ Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No 
 - 确定性 `ALLOW` / `BLOCK` / `REQUIRE_APPROVAL`，带 `rule_id` + evidence
 - 未列 / 歧义 SQL → fail-closed `unsupported_sql`（从不静默当只读 ALLOW）
 - Seal 四案稳定：legal→ALLOW/ok · PII→BLOCK/pii_column · schema→BLOCK/schema_hallucination · expired→BLOCK/expired_partition
+- **HTTP `serve` server-locked**：`--policy` / `--catalog` / `--database` / environment 在进程启动时绑定；请求体不得覆盖（覆盖 → `400 trust_boundary_violation`）
+- **Audit SQL 默认脱敏**：`SQL_WRITE_GATE_AUDIT_SQL_MODE=redact`（可 `hash` / `plain`）
 
 **非生产唯一边界 / 非唯一边界** — **not** the sole production DB security boundary. Combine with least-privilege DB roles, network isolation, and human workflows.
 
@@ -74,13 +76,35 @@ sql-write-gate check "DELETE FROM orders"
 
 ![make seal](docs/evidence/make-seal.png)
 
+## Design decisions
+
+- **判定不含 LLM** — sqlglot AST + catalog + `policy.yaml`；不引入模型裁判，避免门禁本身不可复现。
+- **HTTP 信任边界在 serve 启动时锁定（P0）** — policy / catalog / database / env 属进程配置；body 仅 `sql` / `actor` / `model_id` / `prompt_summary`。非 loopback / `0.0.0.0` 须 `--auth-token` / `SQL_WRITE_GATE_HTTP_TOKEN`。
+- **审计默认 redact** — JSONL 审计对 SQL 字面量默认脱敏，降低日志侧泄露面（`redact|hash|plain`）。
+- **Trusted executor** — DB 凭证、`approve`/`resolve`/`reject` 与 policy 改写权留在受信执行侧；Agent 面只评估 / 入队。
+- **Fail-closed** — 未列语法、歧义写形态、估计失败、缺 flock 等拒绝执行，不静默降级为 ALLOW。
+- **Suite 角色** — RetailDW（离线仓）→ GameStream（实时 ADS）→ SQLGuard（出站门禁）；本仓服务主线消费安全，不做作品集旗舰叙事。
+
 ## Limitations
 
 - **非生产唯一边界 / 非唯一边界** — 须与最小权限 DB 角色、网络隔离、人工流程并用
 - 仅声明矩阵：DuckDB / PostgreSQL / MySQL / SQLite + 已列 SQL；未列语法拒绝
 - 不是分布式审批锁、MySQL wire 代理、Web UI、企业 DQ/血缘/多租户平台
-- HTTP `serve`：policy/catalog/database 已在启动时 server-lock；非 loopback / `0.0.0.0` 须 `--auth-token` / `SQL_WRITE_GATE_HTTP_TOKEN`（详见下方 Trust boundary）
+- 非 loopback / `0.0.0.0` 的 HTTP `serve` 须显式 token（详见下方 Trust boundary）
 - GitHub Latest Release 可能滞后 `main`；以包版本 / commit 为准
+- 单机审批依赖 Unix `fcntl.flock`；Windows 上审批变更 fail-closed（不静默解锁）
+
+## Docs
+
+| Doc | Purpose |
+|-----|---------|
+| [docs/compatibility.md](docs/compatibility.md) | SemVer / breaking-change policy |
+| [docs/upgrade-0.23-to-1.0.md](docs/upgrade-0.23-to-1.0.md) | Upgrade path from 0.23 |
+| [docs/pilot-checklist.md](docs/pilot-checklist.md) | Pilot evidence pack |
+| [docs/v1-acceptance.md](docs/v1-acceptance.md) | System acceptance scenarios + proof |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Common failures, `unknown`, token, CI |
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ---
 
@@ -367,18 +391,6 @@ Approval records store `database_config_id` (fingerprint). Approve reconnect bin
 - Not a distributed approval lock, MySQL wire-protocol proxy, or Web UI
 - Not an enterprise DQ / lineage / ChatBI / multi-tenant platform
 - Not new cloud warehouses beyond the declared DuckDB / PostgreSQL / MySQL / SQLite matrix
-
-## Docs (v1.0)
-
-| Doc | Purpose |
-|-----|---------|
-| [docs/compatibility.md](docs/compatibility.md) | SemVer / breaking-change policy |
-| [docs/upgrade-0.23-to-1.0.md](docs/upgrade-0.23-to-1.0.md) | Upgrade path from 0.23 |
-| [docs/pilot-checklist.md](docs/pilot-checklist.md) | Pilot evidence pack |
-| [docs/v1-acceptance.md](docs/v1-acceptance.md) | System acceptance scenarios + proof |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Common failures, `unknown`, token, CI |
-
-See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Ops knobs
 
