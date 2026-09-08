@@ -20,9 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_version_is_111():
-    assert __version__ == "1.1.2"
-    assert 'version = "1.1.2"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## [1.1.2]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert __version__ == "1.1.3"
+    assert 'version = "1.1.3"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## [1.1.3]" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert PRODUCT == "SQLGuard"
 
 
@@ -172,7 +172,7 @@ def test_datapilot_api_check_and_execute(tmp_path):
     status, health = handle_datapilot_request("GET", "/healthz", None, defaults=defaults)
     assert status == 200
     assert health["ok"] is True
-    assert health["version"] == "1.1.2"
+    assert health["version"] == "1.1.3"
 
     # Legal insert — use check (no mutate shared seed); execute path covered by demo
     status, payload = handle_datapilot_request(

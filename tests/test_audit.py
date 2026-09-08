@@ -3,7 +3,14 @@
 import json
 import re
 
-from write_gate.audit import format_audit_table, format_audit_time, read_audit
+from write_gate.audit import (
+    format_audit_table,
+    format_audit_time,
+    format_sql_for_audit,
+    hash_sql,
+    read_audit,
+    redact_sql_literals,
+)
 from write_gate.cases import LEGAL_WRITE_SQL
 from write_gate.cli import main
 from write_gate.config import demo_policy, production_policy
@@ -29,7 +36,10 @@ def test_check_appends_audit_jsonl(tmp_path):
     rec = rows[0]
     assert rec["agent"] == "test"
     assert rec["environment"] == "demo"
-    assert rec["sql"] == LEGAL_WRITE_SQL
+    # Default audit_sql_mode=redact scrubs literals
+    assert rec["sql"] == format_sql_for_audit(LEGAL_WRITE_SQL, mode="redact")
+    assert "18.50" not in rec["sql"]
+    assert "'2026-09-01'" not in rec["sql"]
     assert rec["operation"] == "insert"
     assert rec["table"] == "orders"
     assert rec["decision"] == "ALLOW"
@@ -119,3 +129,37 @@ def test_cli_audit_empty_message(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "no audit records" in out.lower()
+
+
+def test_audit_sql_mode_redact_hash_plain(tmp_path, monkeypatch):
+    from write_gate.audit import append_audit
+    from write_gate.decision import ACTION_ALLOW, Decision
+
+    sql = LEGAL_WRITE_SQL
+    redacted = redact_sql_literals(sql)
+    assert "18.50" not in redacted
+    assert "'2026-09-01'" not in redacted
+    assert hash_sql(sql).startswith("sha256:")
+
+    audit = tmp_path / "a.jsonl"
+    decision = Decision(
+        action=ACTION_ALLOW,
+        risk="low",
+        rule_id="ok",
+        reason="ok",
+        sql=sql,
+        operation="insert",
+        table="orders",
+    )
+    append_audit(decision, path=audit, audit_sql_mode="plain", environment="demo")
+    assert read_audit(audit, limit=1)[0]["sql"] == sql
+
+    audit2 = tmp_path / "b.jsonl"
+    append_audit(decision, path=audit2, audit_sql_mode="hash", environment="demo")
+    assert read_audit(audit2, limit=1)[0]["sql"] == hash_sql(sql)
+
+    monkeypatch.setenv("SQL_WRITE_GATE_AUDIT_SQL_MODE", "plain")
+    audit3 = tmp_path / "c.jsonl"
+    append_audit(decision, path=audit3, environment="demo")
+    assert read_audit(audit3, limit=1)[0]["sql"] == sql
+

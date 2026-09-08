@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -173,6 +175,76 @@ def resolve_trusted_database_url(
     return None
 
 
+
+# --- audit SQL privacy (P0) --------------------------------------------------
+
+ENV_AUDIT_SQL_MODE = "SQL_WRITE_GATE_AUDIT_SQL_MODE"
+AUDIT_SQL_MODES = frozenset({"redact", "hash", "plain"})
+DEFAULT_AUDIT_SQL_MODE = "redact"
+
+_STRING_LITERAL = re.compile(
+    r"'(?:''|[^'])*'|\"(?:\\.|[^\\\"])*\""
+)
+_NUMBER_LITERAL = re.compile(r"\b\d+(?:\.\d+)?\b")
+
+
+def resolve_audit_sql_mode(explicit: str | None = None) -> str:
+    """Return audit SQL mode: ``redact`` (default) | ``hash`` | ``plain``.
+
+    Modes:
+      - ``redact``: replace string/number literals (default; safer logs)
+      - ``hash``: store ``sha256:<hex>`` of the SQL only
+      - ``plain``: store SQL verbatim (legacy / explicit opt-in)
+    """
+    raw = (explicit if explicit is not None else os.environ.get(ENV_AUDIT_SQL_MODE, "")) or ""
+    mode = str(raw).strip().lower() or DEFAULT_AUDIT_SQL_MODE
+    if mode not in AUDIT_SQL_MODES:
+        return DEFAULT_AUDIT_SQL_MODE
+    return mode
+
+
+def redact_sql_literals(sql: str) -> str:
+    """Replace string/number literals for audit storage."""
+    text = str(sql or "")
+    if not text:
+        return text
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        trees = sqlglot.parse(text)
+        parts: list[str] = []
+        for tree in trees:
+            if tree is None:
+                continue
+            for node in list(tree.walk()):
+                if isinstance(node, exp.Literal):
+                    node.replace(exp.Placeholder())
+            parts.append(tree.sql())
+        if parts:
+            return "; ".join(parts)
+    except Exception:
+        pass
+    out = _STRING_LITERAL.sub("'?'", text)
+    out = _NUMBER_LITERAL.sub("?", out)
+    return out
+
+
+def hash_sql(sql: str) -> str:
+    digest = hashlib.sha256(str(sql or "").encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def format_sql_for_audit(sql: str, *, mode: str | None = None) -> str:
+    """Apply ``audit_sql_mode`` before writing SQL into the audit JSONL."""
+    resolved = resolve_audit_sql_mode(mode)
+    if resolved == "plain":
+        return str(sql or "")
+    if resolved == "hash":
+        return hash_sql(sql)
+    return redact_sql_literals(sql)
+
+
 def append_audit(
     decision: Decision,
     *,
@@ -189,6 +261,7 @@ def append_audit(
     prompt_summary: str | None = None,
     latency_ms: float | None = None,
     success: bool | None = None,
+    audit_sql_mode: str | None = None,
 ) -> None:
     """Append one audit JSONL record with correlatable ids (v0.23).
 
@@ -218,7 +291,7 @@ def append_audit(
         "agent": agent,
         "actor": actor or agent,
         "environment": environment,
-        "sql": decision.sql,
+        "sql": format_sql_for_audit(decision.sql, mode=audit_sql_mode),
         "operation": decision.operation,
         "table": decision.table,
         "estimated_rows": decision.estimated_rows,

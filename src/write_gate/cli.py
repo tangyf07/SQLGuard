@@ -341,6 +341,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_p.add_argument("--host", default="127.0.0.1", help="Bind host")
     serve_p.add_argument("--port", type=int, default=8787, help="Bind port")
+    serve_p.add_argument(
+        "--auth-token",
+        default=None,
+        help=(
+            "HTTP bearer token required for non-loopback binds "
+            "(or set SQL_WRITE_GATE_HTTP_TOKEN). Loopback may omit auth."
+        ),
+    )
 
     dp = sub.add_parser(
         "datapilot",
@@ -661,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             defaults=defaults,
+            auth_token=getattr(args, "auth_token", None),
         )
 
     with _gate_from_args(args) as gate:
