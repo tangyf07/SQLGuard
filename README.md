@@ -39,7 +39,7 @@ Deterministic policy engine (sqlglot AST + catalog + policy.yaml). **No LLM. No 
 
 ## Guarantees
 
-在已声明支持矩阵上：
+在已声明支持矩阵上（**pilot-ready**：DuckDB / PostgreSQL / MySQL / SQLite + 已列 SQL / 入口）：
 
 - 确定性 `ALLOW` / `BLOCK` / `REQUIRE_APPROVAL`，带 `rule_id` + evidence
 - 未列 / 歧义 SQL → fail-closed `unsupported_sql`（从不静默当只读 ALLOW）
