@@ -10,7 +10,7 @@
 | `REQUIRE_APPROVAL` then nothing writes | INSERT/UPDATE / PII SELECT needs human approve | On the **trusted executor**, run `sql-write-gate approve <id>` with the approval token |
 | `TrustError` / missing approval key | Approve/resolve/reject without trust | Create `.logs/approval.key` (or set `SQL_WRITE_GATE_APPROVAL_KEY_FILE`) and export matching `SQL_WRITE_GATE_APPROVAL_TOKEN` |
 | `approval target mismatch` | Queue on DB A, approve with env pointing at DB B | Restore the original `DATABASE_URL` / `POSTGRES_URL` / `MYSQL_URL` for that fingerprint; never swap targets |
-| `unsupported_sql` | Multi-statement, MERGE/COPY, nested DML, SELECT INTO, etc. | Rewrite to a single supported statement (see README SQL support matrix) |
+| `unsupported_sql` | Multi-statement, MERGE/COPY, nested DML, SELECT INTO, etc. | Rewrite to a single supported statement (see [support-matrix.md](support-matrix.md)) |
 | `blast_radius_exceeded` / `blast_radius_unknown` | UPDATE/DELETE touches too many rows, or COUNT failed | Narrow the WHERE; fix connectivity before retrying writes |
 | `StatementTimeoutError` / `statement_timeout` | Statement exceeded `SQL_WRITE_GATE_STATEMENT_TIMEOUT_SEC` | Raise the timeout, optimize SQL, or split work; see **Timeouts** below |
 | Result `truncated=true` / `ResultOversizeError` | SELECT / approve hit row/byte cap (hard byte limit; single oversized row not returned intact) | Raise limits, page the query, or set `RESULT_OVERSIZE=block` for hard reject |
