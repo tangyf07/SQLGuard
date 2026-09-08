@@ -49,6 +49,8 @@ def main() -> int:
         model_id="seal-offline",
         prompt_summary="make seal four core cases",
     ) as gate:
+        # Idempotent vs prior seal runs (seed rows use ids 1..120).
+        gate.conn.execute("DELETE FROM orders WHERE order_id IN (900001, 900002, 900003, 900004)")
         for name, sql, expect_allow, expect_rule in CASES:
             evidence, _result = gate.execute(sql)
             verdict = "ALLOW" if evidence.allowed else "BLOCK"
