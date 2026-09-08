@@ -24,7 +24,7 @@ flowchart LR
   subgraph GS_pipe [GameStream 实时链路]
     E[游戏行为事件] --> K[Kafka]
     K --> F[Flink 清洗/聚合]
-    F --> OLAP[Doris / Iceberg]
+    F --> OLAP[Doris]
     E -. lite .-> DB[(DuckDB)]
     DB --> ADS[(ADS 指标表)]
     OLAP --> ADS
