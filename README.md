@@ -1,7 +1,7 @@
 # sql-write-gate (SQLGuard)
 
-[![CI](https://github.com/tangyf07/sql-write-gate/actions/workflows/ci.yml/badge.svg)](https://github.com/tangyf07/sql-write-gate/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/tangyf07/sql-write-gate)](https://github.com/tangyf07/sql-write-gate/releases/latest)
+[![CI](https://github.com/tangyf07/SQLGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/tangyf07/SQLGuard/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tangyf07/sql-write-gate)](https://github.com/tangyf07/SQLGuard/releases/latest)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
